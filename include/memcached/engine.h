@@ -32,6 +32,9 @@
 #include "memcached/extension.h"
 #include "memcached/vbucket.h"
 #include "memcached/engine_common.h"
+#ifdef USE_BLOCK_ALLOCATOR
+#include "memcached/block_allocator.h"
+#endif
 
 #ifdef __cplusplus
 extern "C" {
@@ -350,8 +353,16 @@ extern "C" {
                                              const void* key, const int nkey,
                                              const size_t nbytes, eitem** eitem);
 
+#ifdef USE_BLOCK_ALLOCATOR
+        void (*list_elem_release)(ENGINE_HANDLE* handle, const void *cookie,
+                                  eitem *one_item);
+
+        void (*list_elem_block_release)(ENGINE_HANDLE* handle, const void *cookie,
+                                        eitem *eitem_list, const int eitem_count);
+#else
         void (*list_elem_release)(ENGINE_HANDLE* handle, const void *cookie,
                                   eitem **eitem_array, const int eitem_count);
+#endif
 
         ENGINE_ERROR_CODE (*list_elem_insert)(ENGINE_HANDLE* handle, const void* cookie,
                                               const void* key, const int nkey,

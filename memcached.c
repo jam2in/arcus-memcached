@@ -741,11 +741,19 @@ conn *conn_new(const int sfd, STATE_FUNC init_state,
 static void conn_coll_eitem_free(conn *c) {
     switch (c->coll_op) {
       case OPERATION_LOP_INSERT:
+#ifdef USE_BLOCK_ALLOCATOR
+        mc_engine.v1->list_elem_release(mc_engine.v0, c, &c->coll_eitem);
+#else
         mc_engine.v1->list_elem_release(mc_engine.v0, c, &c->coll_eitem, 1);
+#endif
         break;
       case OPERATION_LOP_GET:
+#ifdef USE_BLOCK_ALLOCATOR
+        mc_engine.v1->list_elem_block_release(mc_engine.v0, c, c->coll_eitem, c->coll_ecount);
+#else
         mc_engine.v1->list_elem_release(mc_engine.v0, c, c->coll_eitem, c->coll_ecount);
         free(c->coll_eitem);
+#endif
         if (c->coll_resps != NULL) {
             free(c->coll_resps); c->coll_resps = NULL;
         }
@@ -1393,7 +1401,11 @@ static void process_lop_insert_complete(conn *c) {
         }
     }
 
+#ifdef USE_BLOCK_ALLOCATOR
+    mc_engine.v1->list_elem_release(mc_engine.v0, c, &c->coll_eitem);
+#else
     mc_engine.v1->list_elem_release(mc_engine.v0, c, &c->coll_eitem, 1);
+#endif
     c->coll_eitem = NULL;
 }
 
@@ -4119,7 +4131,11 @@ static void process_bin_lop_insert_complete(conn *c) {
     }
 
     /* release the c->coll_eitem reference */
+#ifdef USE_BLOCK_ALLOCATOR
+    mc_engine.v1->list_elem_release(mc_engine.v0, c, &c->coll_eitem);
+#else
     mc_engine.v1->list_elem_release(mc_engine.v0, c, &c->coll_eitem, 1);
+#endif
     c->coll_eitem = NULL;
 }
 
@@ -4304,7 +4320,11 @@ static void process_bin_lop_get(conn *c) {
             conn_set_state(c, conn_mwrite);
         } else {
             STATS_NOKEY(c, cmd_lop_get);
+#ifdef USE_BLOCK_ALLOCATOR
+            mc_engine.v1->list_elem_block_release(mc_engine.v0, c, elem_array, elem_count);
+#else
             mc_engine.v1->list_elem_release(mc_engine.v0, c, elem_array, elem_count);
+#endif
             if (c->ewouldblock)
                 c->ewouldblock = false;
             write_bin_packet(c, PROTOCOL_BINARY_RESPONSE_ENOMEM, 0);
@@ -9427,11 +9447,15 @@ static void process_lop_get(conn *c, char *key, size_t nkey,
                             int32_t from_index, int32_t to_index,
                             bool delete, bool drop_if_empty)
 {
-    eitem  **elem_array = NULL;
+#ifdef USE_BLOCK_ALLOCATOR
+    eitem *elem_list = NULL;
+#else
+    eitem **elem_array = NULL;
+    int est_count;
+#endif
     uint32_t elem_count;
     uint32_t flags, i;
     bool     dropped;
-    int      est_count;
     int      need_size;
 
     assert(c->ewouldblock == false);
@@ -9444,10 +9468,15 @@ static void process_lop_get(conn *c, char *key, size_t nkey,
     if (to_index > MAX_LIST_SIZE)             to_index   = MAX_LIST_SIZE;
     else if (to_index < -(MAX_LIST_SIZE+1))   to_index   = -(MAX_LIST_SIZE+1);
 
+#ifdef USE_BLOCK_ALLOCATOR
+    ret = mc_engine.v1->list_elem_get(mc_engine.v0, c, key, nkey,
+                                      from_index, to_index, delete, drop_if_empty,
+                                      &elem_list, &elem_count, &flags, &dropped, 0);
+#else
     est_count = MAX_LIST_SIZE;
     if ((from_index >= 0 && to_index >= 0) || (from_index < 0 && to_index < 0)) {
         est_count = (from_index <= to_index ? to_index - from_index + 1
-                                            : from_index - to_index + 1);
+                : from_index - to_index + 1);
         if (est_count > MAX_LIST_SIZE) est_count = MAX_LIST_SIZE;
     }
     need_size = est_count * sizeof(eitem*);
@@ -9459,6 +9488,8 @@ static void process_lop_get(conn *c, char *key, size_t nkey,
     ret = mc_engine.v1->list_elem_get(mc_engine.v0, c, key, nkey,
                                       from_index, to_index, delete, drop_if_empty,
                                       elem_array, &elem_count, &flags, &dropped, 0);
+#endif
+
     if (ret == ENGINE_EWOULDBLOCK) {
         c->ewouldblock = true;
         ret = ENGINE_SUCCESS;
@@ -9498,6 +9529,9 @@ static void process_lop_get(conn *c, char *key, size_t nkey,
         eitem_info info;
         char *respbuf; /* response string buffer */
         char *respptr;
+#ifdef USE_BLOCK_ALLOCATOR
+        mem_block *blk = (mem_block *)elem_list;
+#endif
 
         do {
             need_size = ((2*lenstr_size) + 30) /* response head and tail size */
@@ -9515,7 +9549,11 @@ static void process_lop_get(conn *c, char *key, size_t nkey,
 
             for (i = 0; i < elem_count; i++) {
                 mc_engine.v1->get_elem_info(mc_engine.v0, c, ITEM_TYPE_LIST,
+#ifdef USE_BLOCK_ALLOCATOR
+                                           blk->items[i % EITEMS_PER_BLOCK], &info);
+#else
                                            elem_array[i], &info);
+#endif
                 sprintf(respptr, "%u ", info.nbytes-2);
                 if ((add_iov(c, respptr, strlen(respptr)) != 0) ||
                     (add_iov(c, info.value, info.nbytes) != 0)) {
@@ -9535,7 +9573,11 @@ static void process_lop_get(conn *c, char *key, size_t nkey,
 
         if (ret == ENGINE_SUCCESS) {
             STATS_ELEM_HITS(c, lop_get, key, nkey);
+#ifdef USE_BLOCK_ALLOCATOR
+            c->coll_eitem  = (void *)elem_list;
+#else
             c->coll_eitem  = (void *)elem_array;
+#endif
             c->coll_ecount = elem_count;
             c->coll_resps  = respbuf;
             c->coll_op     = OPERATION_LOP_GET;
@@ -9543,7 +9585,11 @@ static void process_lop_get(conn *c, char *key, size_t nkey,
             c->msgcurr     = 0;
         } else { /* ENGINE_ENOMEM */
             STATS_NOKEY(c, cmd_lop_get);
+#ifdef USE_BLOCK_ALLOCATOR
+            mc_engine.v1->list_elem_block_release(mc_engine.v0, c, elem_list, elem_count);
+#else
             mc_engine.v1->list_elem_release(mc_engine.v0, c, elem_array, elem_count);
+#endif
             free(respbuf);
             if (c->ewouldblock)
                 c->ewouldblock = false;
@@ -9564,6 +9610,17 @@ static void process_lop_get(conn *c, char *key, size_t nkey,
         if (ret == ENGINE_KEY_ENOENT) out_string(c, "NOT_FOUND");
         else                          out_string(c, "UNREADABLE");
         break;
+    case ENGINE_ENOMEM:
+        STATS_NOKEY(c, cmd_lop_get);
+#ifdef USE_BLOCK_ALLOCATOR
+        mc_engine.v1->list_elem_block_release(mc_engine.v0, c, elem_list, elem_count);
+#else
+        mc_engine.v1->list_elem_release(mc_engine.v0, c, elem_array, elem_count);
+#endif
+        if (c->ewouldblock)
+            c->ewouldblock = false;
+        out_string(c, "SERVER_ERROR out of memory getting list elements");
+        break;
     default:
         STATS_NOKEY(c, cmd_lop_get);
         if (ret == ENGINE_EBADTYPE) out_string(c, "TYPE_MISMATCH");
@@ -9571,8 +9628,13 @@ static void process_lop_get(conn *c, char *key, size_t nkey,
         else handle_unexpected_errorcode_ascii(c, ret);
     }
 
+#ifdef USE_BLOCK_ALLOCATOR
+    if (ret != ENGINE_SUCCESS && elem_list != NULL) {
+        mc_engine.v1->list_elem_block_release(mc_engine.v0, c, elem_list, elem_count);
+#else
     if (ret != ENGINE_SUCCESS && elem_array != NULL) {
         free((void *)elem_array);
+#endif
     }
 }
 

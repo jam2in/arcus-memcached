@@ -296,12 +296,28 @@ Demo_list_elem_alloc(ENGINE_HANDLE* handle, const void* cookie,
     return ENGINE_ENOTSUP;
 }
 
+#ifdef USE_BLOCK_ALLOCATOR
 static void
 Demo_list_elem_release(ENGINE_HANDLE* handle, const void *cookie,
-                          eitem **eitem_array, const int eitem_count)
+                          eitem *one_eitem)
 {
     return;
 }
+
+static void
+Demo_list_elem_block_release(ENGINE_HANDLE* handle, const void *cookie,
+                             eitem *eitem_list, const int eitem_count)
+{
+    return;
+}
+#else
+static void
+Demo_list_elem_release(ENGINE_HANDLE* handle, const void *cookie,
+                       eitem **eitem_array, const int eitem_count)
+{
+    return;
+}
+#endif
 
 static ENGINE_ERROR_CODE
 Demo_list_elem_insert(ENGINE_HANDLE* handle, const void* cookie,
@@ -779,6 +795,9 @@ create_instance(uint64_t interface, GET_SERVER_API get_server_api,
          .list_struct_create = Demo_list_struct_create,
          .list_elem_alloc   = Demo_list_elem_alloc,
          .list_elem_release = Demo_list_elem_release,
+#ifdef USE_BLOCK_ALLOCATOR
+         .list_elem_block_release = Demo_list_elem_block_release,
+#endif
          .list_elem_insert  = Demo_list_elem_insert,
          .list_elem_delete  = Demo_list_elem_delete,
          .list_elem_get     = Demo_list_elem_get,

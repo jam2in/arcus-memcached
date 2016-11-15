@@ -207,6 +207,11 @@ default_initialize(ENGINE_HANDLE* handle, const char* config_str)
     if (ret != ENGINE_SUCCESS) {
         return ret;
     }
+#ifdef USE_BLOCK_ALLOCATOR
+    if (block_allocator_init(BLOCK_ALLOCATOR_DEFAULT_SIZE) < 0) {
+        return ENGINE_FAILED;
+    }
+#endif
     return ENGINE_SUCCESS;
 }
 
@@ -395,13 +400,31 @@ default_list_elem_alloc(ENGINE_HANDLE* handle, const void* cookie,
     return ret;
 }
 
+#ifdef USE_BLOCK_ALLOCATOR
+static void
+default_list_elem_release(ENGINE_HANDLE* handle, const void *cookie,
+                          eitem *one_eitem)
+{
+    struct default_engine *engine = get_handle(handle);
+    list_elem_release(engine, (list_elem_item *)one_eitem);
+}
+
+static void
+default_list_elem_block_release(ENGINE_HANDLE* handle, const void *cookie,
+                                eitem *eitem_list, const int eitem_count)
+{
+    struct default_engine *engine = get_handle(handle);
+    list_elem_block_release(engine, eitem_list, eitem_count);
+}
+#else
 static void
 default_list_elem_release(ENGINE_HANDLE* handle, const void *cookie,
                           eitem **eitem_array, const int eitem_count)
 {
     struct default_engine *engine = get_handle(handle);
-    list_elem_release(engine, (list_elem_item**)eitem_array, eitem_count);
+    list_elem_release(engine, (list_elem_item **)eitem_array, eitem_count);
 }
+#endif
 
 static ENGINE_ERROR_CODE
 default_list_elem_insert(ENGINE_HANDLE* handle, const void* cookie,
@@ -442,7 +465,11 @@ default_list_elem_get(ENGINE_HANDLE* handle, const void* cookie,
                       const void* key, const int nkey,
                       int from_index, int to_index,
                       const bool delete, const bool drop_if_empty,
+#ifdef USE_BLOCK_ALLOCATOR
+                      eitem** eitem_list, uint32_t* eitem_count,
+#else
                       eitem** eitem_array, uint32_t* eitem_count,
+#endif
                       uint32_t* flags, bool* dropped, uint16_t vbucket)
 {
     struct default_engine *engine = get_handle(handle);
@@ -452,7 +479,11 @@ default_list_elem_get(ENGINE_HANDLE* handle, const void* cookie,
     if (delete) ACTION_BEFORE_WRITE(cookie, key, nkey);
     ret = list_elem_get(engine, key, nkey, from_index, to_index,
                         delete, drop_if_empty,
+#ifdef USE_BLOCK_ALLOCATOR
+                        eitem_list, eitem_count,
+#else
                         (list_elem_item**)eitem_array, eitem_count,
+#endif
                         flags, dropped);
     if (delete) ACTION_AFTER_WRITE(cookie, ret);
     return ret;
@@ -1493,6 +1524,9 @@ create_instance(uint64_t interface, GET_SERVER_API get_server_api,
          .list_struct_create = default_list_struct_create,
          .list_elem_alloc   = default_list_elem_alloc,
          .list_elem_release = default_list_elem_release,
+#ifdef USE_BLOCK_ALLOCATOR
+         .list_elem_block_release = default_list_elem_block_release,
+#endif
          .list_elem_insert  = default_list_elem_insert,
          .list_elem_delete  = default_list_elem_delete,
          .list_elem_get     = default_list_elem_get,

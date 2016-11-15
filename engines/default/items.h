@@ -416,8 +416,16 @@ ENGINE_ERROR_CODE list_struct_create(struct default_engine *engine,
 list_elem_item *list_elem_alloc(struct default_engine *engine,
                                 const int nbytes, const void *cookie);
 
+#ifdef USE_BLOCK_ALLOCATOR
+void list_elem_release(struct default_engine *engine,
+                       list_elem_item *elem);
+
+void list_elem_block_release(struct default_engine *engine,
+                             eitem *elem_list, const int eitem_count);
+#else
 void list_elem_release(struct default_engine *engine,
                        list_elem_item **elem_array, const int elem_count);
+#endif
 
 ENGINE_ERROR_CODE list_elem_insert(struct default_engine *engine,
                                    const char *key, const size_t nkey,
@@ -435,7 +443,11 @@ ENGINE_ERROR_CODE list_elem_get(struct default_engine *engine,
                                 const char *key, const size_t nkey,
                                 int from_index, int to_index,
                                 const bool delete, const bool drop_if_empty,
+#ifdef USE_BLOCK_ALLOCATOR
+                                eitem **elem_list, uint32_t *elem_count,
+#else
                                 list_elem_item **elem_array, uint32_t *elem_count,
+#endif
                                 uint32_t *flags, bool *dropped);
 
 ENGINE_ERROR_CODE set_struct_create(struct default_engine *engine,

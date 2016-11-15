@@ -1629,26 +1629,59 @@ static uint32_t do_list_elem_delete(struct default_engine *engine,
     return fcnt;
 }
 
-static uint32_t do_list_elem_get(struct default_engine *engine,
+static ENGINE_ERROR_CODE do_list_elem_get(struct default_engine *engine,
                                  list_meta_info *info,
                                  const int index, const uint32_t count,
                                  const bool forward, const bool delete,
-                                 list_elem_item **elem_array)
+#ifdef USE_BLOCK_ALLOCATOR
+                                 eitem **elem_list, uint32_t *elem_count)
+#else
+                                 list_elem_item **elem_array, uint32_t *elem_count)
+#endif
 {
     uint32_t fcnt = 0; /* found count */
     list_elem_item *tobe;
     list_elem_item *elem;
 
     elem = do_list_elem_find(info, index);
+#ifdef USE_BLOCK_ALLOCATOR
+    mem_block *blk = NULL;
     while (elem != NULL) {
+        if (fcnt % EITEMS_PER_BLOCK == 0) {
+            if (fcnt == 0) {    /* the first block */
+                blk = (mem_block *)allocate_single_block();
+                if (blk == NULL) {
+                    return ENGINE_ENOMEM;
+                }
+                *elem_list = blk;
+            } else {
+                blk->next = (mem_block *)allocate_single_block();
+                if (blk->next == NULL) {
+                    free_block_list(*elem_list, -1);
+                    return ENGINE_ENOMEM;
+                }
+                blk = blk->next;
+            }
+        }
+        blk->items[fcnt % EITEMS_PER_BLOCK] = (eitem *)elem;
+        fcnt++;
+#else
+    while (elem != NULL) {
+        elem_array[fcnt++] = elem;
+#endif
         tobe = (forward ? elem->next : elem->prev);
         elem->refcount++;
-        elem_array[fcnt++] = elem;
         if (delete) do_list_elem_unlink(engine, info, elem, ELEM_DELETE_NORMAL);
         if (count > 0 && fcnt >= count) break;
         elem = tobe;
     }
-    return fcnt;
+
+    if (fcnt > 0) {
+        *elem_count = fcnt;
+        return ENGINE_SUCCESS;
+    } else {
+        return ENGINE_ELEM_ENOENT;
+    }
 }
 
 static ENGINE_ERROR_CODE do_list_elem_insert(struct default_engine *engine,
@@ -6372,6 +6405,39 @@ list_elem_item *list_elem_alloc(struct default_engine *engine,
     return elem;
 }
 
+#ifdef USE_BLOCK_ALLOCATOR
+void list_elem_release(struct default_engine *engine,
+                       list_elem_item *one_item)
+{
+    pthread_mutex_lock(&engine->cache_lock);
+    do_list_elem_release(engine, one_item);
+    pthread_mutex_unlock(&engine->cache_lock);
+}
+
+void list_elem_block_release(struct default_engine *engine,
+                             eitem *eitem_list, const int elem_count)
+{
+    int cnt = 0;
+    mem_block *blk = eitem_list;
+    mem_block *done = NULL;
+    pthread_mutex_lock(&engine->cache_lock);
+    while (cnt < elem_count) {
+        do_list_elem_release(engine, (list_elem_item *)(blk->items[cnt % EITEMS_PER_BLOCK]));
+        if (cnt % EITEMS_PER_BLOCK == EITEMS_PER_BLOCK - 1) {
+            done = blk;
+            blk = blk->next;
+            free_block_list(done, 1);
+        }
+        cnt++;
+        if ((cnt % 100) == 0 && cnt < elem_count) {
+            pthread_mutex_unlock(&engine->cache_lock);
+            pthread_mutex_lock(&engine->cache_lock);
+        }
+    }
+    free_block_list(blk, -1);
+    pthread_mutex_unlock(&engine->cache_lock);
+}
+#else
 void list_elem_release(struct default_engine *engine,
                        list_elem_item **elem_array, const int elem_count)
 {
@@ -6386,6 +6452,7 @@ void list_elem_release(struct default_engine *engine,
     }
     pthread_mutex_unlock(&engine->cache_lock);
 }
+#endif
 
 ENGINE_ERROR_CODE list_elem_insert(struct default_engine *engine,
                                    const char *key, const size_t nkey,
@@ -6498,7 +6565,11 @@ ENGINE_ERROR_CODE list_elem_get(struct default_engine *engine,
                                 const char *key, const size_t nkey,
                                 int from_index, int to_index,
                                 const bool delete, const bool drop_if_empty,
+#ifdef USE_BLOCK_ALLOCATOR
+                                eitem **elem_list, uint32_t *elem_count,
+#else
                                 list_elem_item **elem_array, uint32_t *elem_count,
+#endif
                                 uint32_t *flags, bool *dropped)
 {
     hash_item      *it;
@@ -6520,8 +6591,12 @@ ENGINE_ERROR_CODE list_elem_get(struct default_engine *engine,
                 int  index = from_index;
                 uint32_t count = (forward ? (to_index - from_index + 1)
                                           : (from_index - to_index + 1));
-                *elem_count = do_list_elem_get(engine, info, index, count, forward, delete, elem_array);
-                if (*elem_count > 0) {
+#ifdef USE_BLOCK_ALLOCATOR
+                ret = do_list_elem_get(engine, info, index, count, forward, delete, elem_list, elem_count);
+#else
+                ret = do_list_elem_get(engine, info, index, count, forward, delete, elem_array, elem_count);
+#endif
+                if (ret == ENGINE_SUCCESS) {
                     if (info->ccnt == 0 && drop_if_empty) {
                         assert(delete == true);
                         do_item_unlink(engine, it, ITEM_UNLINK_EMPTY);
@@ -6530,8 +6605,6 @@ ENGINE_ERROR_CODE list_elem_get(struct default_engine *engine,
                         *dropped = false;
                     }
                     *flags = it->flags;
-                } else {
-                    ret = ENGINE_ELEM_ENOENT; /* SERVER_ERROR internal */
                 }
             }
         } while (0);
