@@ -796,7 +796,11 @@ static void conn_coll_eitem_free(conn *c) {
 #endif
       case OPERATION_BOP_INSERT:
       case OPERATION_BOP_UPSERT:
+#ifdef USE_BLOCK_ALLOCATOR
+        mc_engine.v1->btree_elem_release(mc_engine.v0, c, &c->coll_eitem);
+#else
         mc_engine.v1->btree_elem_release(mc_engine.v0, c, &c->coll_eitem, 1);
+#endif
         break;
       case OPERATION_BOP_UPDATE:
         if (c->coll_eitem != NULL)
@@ -805,8 +809,12 @@ static void conn_coll_eitem_free(conn *c) {
       case OPERATION_BOP_GET:
       case OPERATION_BOP_PWG: /* position with get */
       case OPERATION_BOP_GBP: /* get by position */
+#ifdef USE_BLOCK_ALLOCATOR
+        mc_engine.v1->btree_elem_block_release(mc_engine.v0, c, c->coll_eitem, c->coll_ecount);
+#else
         mc_engine.v1->btree_elem_release(mc_engine.v0, c, c->coll_eitem, c->coll_ecount);
         free(c->coll_eitem);
+#endif
         if (c->coll_resps != NULL) {
             free(c->coll_resps); c->coll_resps = NULL;
         }
@@ -818,7 +826,11 @@ static void conn_coll_eitem_free(conn *c) {
 #ifdef SUPPORT_BOP_SMGET
       case OPERATION_BOP_SMGET:
 #endif
+#ifdef USE_BLOCK_ALLOCATOR
+        mc_engine.v1->btree_elem_array_release(mc_engine.v0, c, c->coll_eitem, c->coll_ecount);
+#else
         mc_engine.v1->btree_elem_release(mc_engine.v0, c, c->coll_eitem, c->coll_ecount);
+#endif
         free(c->coll_eitem);
         free(c->coll_strkeys); c->coll_strkeys = NULL;
         break;
@@ -1979,7 +1991,11 @@ static void process_bop_insert_complete(conn *c) {
 
     if (strncmp((char*)info.value + info.nbytes - 2, "\r\n", 2) != 0) {
         // release the btree element
+#ifdef USE_BLOCK_ALLOCATOR
+        mc_engine.v1->btree_elem_release(mc_engine.v0, c, &c->coll_eitem);
+#else
         mc_engine.v1->btree_elem_release(mc_engine.v0, c, &c->coll_eitem, 1);
+#endif
         c->coll_eitem = NULL;
         out_string(c, "CLIENT_ERROR bad data chunk");
     } else {
@@ -1999,7 +2015,11 @@ static void process_bop_insert_complete(conn *c) {
         }
 
         // release the btree element inserted.
+#ifdef USE_BLOCK_ALLOCATOR
+        mc_engine.v1->btree_elem_release(mc_engine.v0, c, &c->coll_eitem);
+#else
         mc_engine.v1->btree_elem_release(mc_engine.v0, c, &c->coll_eitem, 1);
+#endif
         c->coll_eitem = NULL;
 
         if (settings.detail_enabled) {
@@ -2029,8 +2049,12 @@ static void process_bop_insert_complete(conn *c) {
                     (add_iov(c, info.value, info.nbytes) != 0) ||
                     (add_iov(c, "TRIMMED\r\n", strlen("TRIMMED\r\n")) != 0))
                 {
+#ifdef USE_BLOCK_ALLOCATOR
+                    mc_engine.v1->btree_elem_release(mc_engine.v0, c, &trim_result.elems);
+#else
                     mc_engine.v1->btree_elem_release(mc_engine.v0, c,
                                                      &trim_result.elems, trim_result.count);
+#endif
                     if (c->ewouldblock)
                         c->ewouldblock = false;
                     out_string(c, "SERVER_ERROR out of memory writing get response");
@@ -2289,7 +2313,11 @@ static void process_bop_mget_complete(conn *c) {
         break;
       case ENGINE_ENOMEM:
         STATS_NOKEY(c, cmd_bop_mget);
+#ifdef USE_BLOCK_ALLOCATOR
+        mc_engine.v1->btree_elem_array_release(mc_engine.v0, c, elem_array, tot_elem_count);
+#else
         mc_engine.v1->btree_elem_release(mc_engine.v0, c, elem_array, tot_elem_count);
+#endif
         out_string(c, "SERVER_ERROR out of memory writing get response");
         break;
       default:
@@ -2455,7 +2483,11 @@ static void process_bop_smget_complete_old(conn *c) {
             c->msgcurr     = 0;
         } else {
             STATS_NOKEY(c, cmd_bop_smget);
+#ifdef USE_BLOCK_ALLOCATOR
+            mc_engine.v1->btree_elem_array_release(mc_engine.v0, c, elem_array, elem_count);
+#else
             mc_engine.v1->btree_elem_release(mc_engine.v0, c, elem_array, elem_count);
+#endif
             out_string(c, "SERVER_ERROR out of memory writing get response");
         }
         }
@@ -2626,7 +2658,11 @@ static void process_bop_smget_complete(conn *c) {
             c->msgcurr     = 0;
         } else {
             STATS_NOKEY(c, cmd_bop_smget);
+#ifdef USE_BLOCK_ALLOCATOR
+            mc_engine.v1->btree_elem_array_release(mc_engine.v0, c, smres.elem_array,
+#else
             mc_engine.v1->btree_elem_release(mc_engine.v0, c, smres.elem_array,
+#endif
                                              smres.elem_count+smres.trim_count);
             out_string(c, "SERVER_ERROR out of memory writing get response");
         }
@@ -5099,7 +5135,11 @@ static void process_bin_bop_insert_complete(conn *c) {
     }
 
     /* release the c->coll_eitem reference */
+#ifdef USE_BLOCK_ALLOCATOR
+    mc_engine.v1->btree_elem_release(mc_engine.v0, c, &c->coll_eitem);
+#else
     mc_engine.v1->btree_elem_release(mc_engine.v0, c, &c->coll_eitem, 1);
+#endif
     c->coll_eitem = NULL;
 }
 
@@ -5490,7 +5530,11 @@ static void process_bin_bop_get(conn *c) {
             conn_set_state(c, conn_mwrite);
         } else {
             STATS_NOKEY(c, cmd_bop_get);
+#ifdef USE_BLOCK_ALLOCATOR
+            mc_engine.v1->btree_elem_block_release(mc_engine.v0, c, elem_array, elem_count);
+#else
             mc_engine.v1->btree_elem_release(mc_engine.v0, c, elem_array, elem_count);
+#endif
             if (c->ewouldblock)
                 c->ewouldblock = false;
             write_bin_packet(c, PROTOCOL_BINARY_RESPONSE_ENOMEM, 0);
@@ -5926,7 +5970,11 @@ static void process_bin_bop_smget_complete_old(conn *c) {
             conn_set_state(c, conn_mwrite);
         } else {
             STATS_NOKEY(c, cmd_bop_smget);
+#ifdef USE_BLOCK_ALLOCATOR
+            mc_engine.v1->btree_elem_array_release(mc_engine.v0, c, elem_array, elem_count);
+#else
             mc_engine.v1->btree_elem_release(mc_engine.v0, c, elem_array, elem_count);
+#endif
             write_bin_packet(c, PROTOCOL_BINARY_RESPONSE_ENOMEM, 0);
         }
         }
@@ -6120,7 +6168,11 @@ static void process_bin_bop_smget_complete(conn *c) {
             conn_set_state(c, conn_mwrite);
         } else {
             STATS_NOKEY(c, cmd_bop_smget);
+#ifdef USE_BLOCK_ALLOCATOR
+            mc_engine.v1->btree_elem_array_release(mc_engine.v0, c, smres.elem_array,
+#else
             mc_engine.v1->btree_elem_release(mc_engine.v0, c, smres.elem_array,
+#endif
                                              smres.elem_count+smres.trim_count);
             write_bin_packet(c, PROTOCOL_BINARY_RESPONSE_ENOMEM, 0);
         }
@@ -10327,18 +10379,29 @@ static void process_bop_get(conn *c, char *key, size_t nkey,
                             const uint32_t offset, const uint32_t count,
                             const bool delete, const bool drop_if_empty)
 {
+#ifdef USE_BLOCK_ALLOCATOR
+    eitem  *elem_list = NULL;
+#else
     eitem  **elem_array = NULL;
+    int est_count;
+#endif
     uint32_t elem_count;
     uint32_t access_count;
     uint32_t flags, i;
     bool     dropped_trimmed;
-    int      est_count;
     int      need_size;
 
     assert(c->ewouldblock == false);
 
     ENGINE_ERROR_CODE ret = ENGINE_SUCCESS;
 
+#ifdef USE_BLOCK_ALLOCATOR
+    ret = mc_engine.v1->btree_elem_get(mc_engine.v0, c, key, nkey,
+                                       bkrange, efilter, offset, count,
+                                       delete, drop_if_empty,
+                                       &elem_list, &elem_count, &access_count,
+                                       &flags, &dropped_trimmed, 0);
+#else
     est_count = MAX_BTREE_SIZE;
     if (count > 0 && count < MAX_BTREE_SIZE) {
         est_count = count;
@@ -10354,6 +10417,7 @@ static void process_bop_get(conn *c, char *key, size_t nkey,
                                        delete, drop_if_empty,
                                        elem_array, &elem_count, &access_count,
                                        &flags, &dropped_trimmed, 0);
+#endif
     if (ret == ENGINE_EWOULDBLOCK) {
         c->ewouldblock = true;
         ret = ENGINE_SUCCESS;
@@ -10397,6 +10461,9 @@ static void process_bop_get(conn *c, char *key, size_t nkey,
         char *respbuf; /* response string buffer */
         char *respptr;
         int   resplen;
+#ifdef USE_BLOCK_ALLOCATOR
+        mem_block *blk = (mem_block *)elem_list;
+#endif
 
         do {
             need_size = ((2*lenstr_size) + 30) /* response head and tail size */
@@ -10414,7 +10481,11 @@ static void process_bop_get(conn *c, char *key, size_t nkey,
 
             for (i = 0; i < elem_count; i++) {
                 mc_engine.v1->get_elem_info(mc_engine.v0, c, ITEM_TYPE_BTREE,
+#ifdef USE_BLOCK_ALLOCATOR
+                                            blk->items[i % EITEMS_PER_BLOCK], &info);
+#else
                                             elem_array[i], &info);
+#endif
                 resplen = make_bop_elem_response(respptr, &info);
                 if ((add_iov(c, respptr, resplen) != 0) ||
                     (add_iov(c, info.value, info.nbytes) != 0)) {
@@ -10437,7 +10508,11 @@ static void process_bop_get(conn *c, char *key, size_t nkey,
 
         if (ret == ENGINE_SUCCESS) {
             STATS_ELEM_HITS(c, bop_get, key, nkey);
+#ifdef USE_BLOCK_ALLOCATOR
+            c->coll_eitem  = (void *)elem_list;
+#else
             c->coll_eitem  = (void *)elem_array;
+#endif
             c->coll_ecount = elem_count;
             c->coll_resps  = respbuf;
             c->coll_op     = OPERATION_BOP_GET;
@@ -10445,7 +10520,11 @@ static void process_bop_get(conn *c, char *key, size_t nkey,
             c->msgcurr     = 0;
         } else { /* ENGINE_ENOMEM */
             STATS_NOKEY(c, cmd_bop_get);
+#ifdef USE_BLOCK_ALLOCATOR
+            mc_engine.v1->btree_elem_block_release(mc_engine.v0, c, elem_list, elem_count);
+#else
             mc_engine.v1->btree_elem_release(mc_engine.v0, c, elem_array, elem_count);
+#endif
             free(respbuf);
             if (c->ewouldblock)
                 c->ewouldblock = false;
@@ -10476,8 +10555,13 @@ static void process_bop_get(conn *c, char *key, size_t nkey,
         else handle_unexpected_errorcode_ascii(c, ret);
     }
 
+#ifdef USE_BLOCK_ALLOCATOR
+    if (ret != ENGINE_SUCCESS && elem_list != NULL) {
+        mc_engine.v1->list_elem_block_release(mc_engine.v0, c, elem_list, elem_count);
+#else
     if (ret != ENGINE_SUCCESS && elem_array != NULL) {
         free((void *)elem_array);
+#endif
     }
 }
 
@@ -10666,7 +10750,11 @@ static void process_bop_pwg(conn *c, char *key, size_t nkey, const bkey_range *b
             c->msgcurr     = 0;
         } else { /* ENGINE_ENOMEM */
             STATS_NOKEY(c, cmd_bop_pwg);
+#ifdef USE_BLOCK_ALLOCATOR
+            mc_engine.v1->btree_elem_array_release(mc_engine.v0, c, elem_array, elem_count);
+#else
             mc_engine.v1->btree_elem_release(mc_engine.v0, c, elem_array, elem_count);
+#endif
             free(respbuf);
             out_string(c, "SERVER_ERROR out of memory writing get response");
         }
@@ -10797,7 +10885,11 @@ static void process_bop_gbp(conn *c, char *key, size_t nkey, ENGINE_BTREE_ORDER 
             c->msgcurr     = 0;
         } else { /* ENGINE_ENOMEM */
             STATS_NOKEY(c, cmd_bop_gbp);
+#ifdef USE_BLOCK_ALLOCATOR
+            mc_engine.v1->btree_elem_array_release(mc_engine.v0, c, elem_array, elem_count);
+#else
             mc_engine.v1->btree_elem_release(mc_engine.v0, c, elem_array, elem_count);
+#endif
             free(respbuf);
             out_string(c, "SERVER_ERROR out of memory writing get response");
         }

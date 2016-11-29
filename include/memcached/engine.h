@@ -497,7 +497,16 @@ extern "C" {
                                               const size_t nbkey, const size_t neflag,
                                               const size_t nbytes, eitem** eitem);
 
+#ifdef USE_BLOCK_ALLOCATOR
         void (*btree_elem_release)(ENGINE_HANDLE* handle, const void *cookie,
+                                   eitem *one_item);
+        
+        void (*btree_elem_block_release)(ENGINE_HANDLE *handle, const void *cookie,
+                                         eitem *eitem_list, const int eitem_count);
+        void (*btree_elem_array_release)(ENGINE_HANDLE *handle, const void *cookie,
+#else
+        void (*btree_elem_release)(ENGINE_HANDLE* handle, const void *cookie,
+#endif
                                    eitem **eitem_array, const int eitem_count);
 
         ENGINE_ERROR_CODE (*btree_elem_insert)(ENGINE_HANDLE* handle, const void* cookie,

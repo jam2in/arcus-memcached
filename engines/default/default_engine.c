@@ -756,6 +756,30 @@ default_btree_elem_alloc(ENGINE_HANDLE* handle, const void* cookie,
     return ret;
 }
 
+#ifdef USE_BLOCK_ALLOCATOR
+static void
+default_btree_elem_release(ENGINE_HANDLE* handle, const void *cookie,
+                           eitem *one_eitem)
+{
+    struct default_engine *engine = get_handle(handle);
+    btree_elem_release(engine, (btree_elem_item *)one_eitem);
+}
+
+static void
+default_btree_elem_block_release(ENGINE_HANDLE* handle, const void *cookie,
+                           eitem *eitem_list, const int eitem_count)
+{
+    struct default_engine *engine = get_handle(handle);
+    btree_elem_block_release(engine, eitem_list, eitem_count);
+}
+static void
+default_btree_elem_array_release(ENGINE_HANDLE* handle, const void *cookie,
+                                 eitem **eitem_array, const int eitem_count)
+{
+    struct default_engine *engine = get_handle(handle);
+    btree_elem_array_release(engine, (btree_elem_item **)eitem_array, eitem_count);
+}
+#else
 static void
 default_btree_elem_release(ENGINE_HANDLE* handle, const void *cookie,
                            eitem **eitem_array, const int eitem_count)
@@ -763,6 +787,7 @@ default_btree_elem_release(ENGINE_HANDLE* handle, const void *cookie,
     struct default_engine *engine = get_handle(handle);
     btree_elem_release(engine, (btree_elem_item**)eitem_array, eitem_count);
 }
+#endif
 
 static ENGINE_ERROR_CODE
 default_btree_elem_insert(ENGINE_HANDLE* handle, const void* cookie,
@@ -858,7 +883,11 @@ default_btree_elem_get(ENGINE_HANDLE* handle, const void* cookie,
                        const bkey_range *bkrange, const eflag_filter *efilter,
                        const uint32_t offset, const uint32_t req_count,
                        const bool delete, const bool drop_if_empty,
+#ifdef USE_BLOCK_ALLOCATOR
+                       eitem** eitem_list, uint32_t* eitem_count,
+#else
                        eitem** eitem_array, uint32_t* eitem_count,
+#endif
                        uint32_t *access_count, uint32_t* flags,
                        bool* dropped_trimmed, uint16_t vbucket)
 {
@@ -869,7 +898,11 @@ default_btree_elem_get(ENGINE_HANDLE* handle, const void* cookie,
     if (delete) ACTION_BEFORE_WRITE(cookie, key, nkey);
     ret = btree_elem_get(engine, key, nkey, bkrange, efilter,
                          offset, req_count, delete, drop_if_empty,
+#ifdef USE_BLOCK_ALLOCATOR
+                         eitem_list, eitem_count,
+#else
                          (btree_elem_item**)eitem_array, eitem_count,
+#endif
                          access_count, flags, dropped_trimmed);
     if (delete) ACTION_AFTER_WRITE(cookie, ret);
     return ret;
@@ -1552,6 +1585,10 @@ create_instance(uint64_t interface, GET_SERVER_API get_server_api,
          .btree_struct_create = default_btree_struct_create,
          .btree_elem_alloc   = default_btree_elem_alloc,
          .btree_elem_release = default_btree_elem_release,
+#ifdef USE_BLOCK_ALLOCATOR
+         .btree_elem_block_release = default_btree_elem_block_release,
+         .btree_elem_array_release = default_btree_elem_array_release,
+#endif
          .btree_elem_insert  = default_btree_elem_insert,
          .btree_elem_update  = default_btree_elem_update,
          .btree_elem_delete  = default_btree_elem_delete,

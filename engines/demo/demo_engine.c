@@ -498,12 +498,28 @@ Demo_btree_elem_alloc(ENGINE_HANDLE* handle, const void* cookie,
     return ENGINE_ENOTSUP;
 }
 
+#ifdef USE_BLOCK_ALLOCATOR
+static void
+Demo_btree_elem_release(ENGINE_HANDLE* handle, const void *cookie,
+                        eitem *one_item)
+{
+    return;
+}
+
+static void
+Demo_btree_elem_block_release(ENGINE_HANDLE* handle, const void *cookie,
+                              eitem *eitem_list, const int eitem_count)
+{
+    return;
+}
+#else
 static void
 Demo_btree_elem_release(ENGINE_HANDLE* handle, const void *cookie,
                            eitem **eitem_array, const int eitem_count)
 {
     return;
 }
+#endif
 
 static ENGINE_ERROR_CODE
 Demo_btree_elem_insert(ENGINE_HANDLE* handle, const void* cookie,
@@ -823,6 +839,9 @@ create_instance(uint64_t interface, GET_SERVER_API get_server_api,
          .btree_struct_create = Demo_btree_struct_create,
          .btree_elem_alloc   = Demo_btree_elem_alloc,
          .btree_elem_release = Demo_btree_elem_release,
+#ifdef USE_BLOCK_ALLOCATOR
+         .btree_elem_block_release = Demo_btree_elem_block_release,
+#endif
          .btree_elem_insert  = Demo_btree_elem_insert,
          .btree_elem_update  = Demo_btree_elem_update,
          .btree_elem_delete  = Demo_btree_elem_delete,

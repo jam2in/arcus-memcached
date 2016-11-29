@@ -4405,10 +4405,14 @@ static bool do_btree_overlapped_with_trimmed_space(btree_meta_info *info,
     return overlapped;
 }
 
-static uint32_t do_btree_elem_get(struct default_engine *engine, btree_meta_info *info,
+static ENGINE_ERROR_CODE do_btree_elem_get(struct default_engine *engine, btree_meta_info *info,
                                   const int bkrtype, const bkey_range *bkrange, const eflag_filter *efilter,
                                   const uint32_t offset, const uint32_t count, const bool delete,
-                                  btree_elem_item **elem_array,
+#ifdef USE_BLOCK_ALLOCATOR
+                                  eitem **elem_list, uint32_t *elem_count,
+#else
+                                  btree_elem_item **elem_array, uint32_t *elem_count,
+#endif
                                   uint32_t *access_count, bool *potentialbkeytrim)
 {
     btree_elem_posi  path[BTREE_MAX_DEPTH];
@@ -4421,7 +4425,7 @@ static uint32_t do_btree_elem_get(struct default_engine *engine, btree_meta_info
     if (info->root == NULL) {
         if (access_count)
             *access_count = 0;
-        return 0;
+        return ENGINE_ELEM_ENOENT;
     }
 
     assert(info->root->ndepth < BTREE_MAX_DEPTH);
@@ -4429,11 +4433,21 @@ static uint32_t do_btree_elem_get(struct default_engine *engine, btree_meta_info
     if (elem != NULL) {
         if (bkrtype == BKEY_RANGE_TYPE_SIN) { /* single bkey */
             assert(path[0].bkeq == true);
+#ifdef USE_BLOCK_ALLOCATOR
+            *elem_list = (mem_block *)allocate_single_block();
+            if (*elem_list == NULL) {
+                return ENGINE_ENOMEM;
+            }
+#endif
             tot_access++;
             if (offset == 0) {
                 if (efilter == NULL || do_btree_elem_filter(elem, efilter)) {
                     elem->refcount++;
+#ifdef USE_BLOCK_ALLOCATOR
+                    *elem_list = elem;
+#else
                     elem_array[tot_found++] = elem;
+#endif
                     if (delete) {
                         do_btree_elem_unlink(engine, info, path, ELEM_DELETE_NORMAL);
                     }
@@ -4473,8 +4487,30 @@ static uint32_t do_btree_elem_get(struct default_engine *engine, btree_meta_info
                     if (skip_cnt < offset) {
                         skip_cnt++;
                     } else {
+#ifdef USE_BLOCK_ALLOCATOR
+                        mem_block *blk = NULL;
+                        if ((tot_found+cur_found) % EITEMS_PER_BLOCK == 0) {
+                            if (tot_found+cur_found == 0) {     /* the first block */
+                                blk = (mem_block *)allocate_single_block();
+                                if (blk == NULL) {
+                                    return ENGINE_ENOMEM;
+                                }
+                                *elem_list = blk;
+                            } else {
+                                blk->next = (mem_block *)allocate_single_block();
+                                if (blk->next == NULL) {
+                                    free_block_list(*elem_list, -1);
+                                    return ENGINE_ENOMEM;
+                                }
+                                blk = blk->next;
+                            }
+                        }
+                        elem->refcount++;
+                        blk->items[(tot_found+cur_found) % EITEMS_PER_BLOCK] = (eitem *)elem;
+#else
                         elem->refcount++;
                         elem_array[tot_found+cur_found] = elem;
+#endif
                         if (delete) {
                             stotal += slabs_space_size(engine, do_btree_elem_ntotal(elem));
                             elem->status = BTREE_ITEM_STATUS_UNLINK;
@@ -4552,7 +4588,13 @@ static uint32_t do_btree_elem_get(struct default_engine *engine, btree_meta_info
     }
     if (access_count)
         *access_count = tot_access;
-    return tot_found;
+
+    *elem_count = tot_found;
+    if (tot_found > 0) {
+        return ENGINE_SUCCESS;
+    } else {
+        return ENGINE_ELEM_ENOENT;
+    }
 }
 
 static uint32_t do_btree_elem_count(struct default_engine *engine, btree_meta_info *info,
@@ -6833,7 +6875,43 @@ btree_elem_item *btree_elem_alloc(struct default_engine *engine,
     return elem;
 }
 
+#ifdef USE_BLOCK_ALLOCATOR
 void btree_elem_release(struct default_engine *engine,
+                        btree_elem_item *one_item)
+{
+    pthread_mutex_lock(&engine->cache_lock);
+    do_btree_elem_release(engine, one_item);
+    pthread_mutex_unlock(&engine->cache_lock);
+}
+
+void btree_elem_block_release(struct default_engine *engine,
+                              eitem *eitem_list, const int elem_count)
+{
+    int cnt = 0;
+    mem_block *blk = eitem_list;
+    mem_block *done = NULL;
+    pthread_mutex_lock(&engine->cache_lock);
+    while (cnt < elem_count) {
+        do_btree_elem_release(engine, (btree_elem_item *)(blk->items[cnt % EITEMS_PER_BLOCK]));
+        if (cnt % EITEMS_PER_BLOCK == EITEMS_PER_BLOCK - 1) {
+            done = blk;
+            blk = blk->next;
+            free_block_list(done, 1);
+        }
+        cnt++;
+        if ((cnt % 100) == 0 && cnt < elem_count) {
+            pthread_mutex_unlock(&engine->cache_lock);
+            pthread_mutex_lock(&engine->cache_lock);
+        }
+    }
+    free_block_list(blk, -1);
+    pthread_mutex_unlock(&engine->cache_lock);
+}
+
+void btree_elem_array_release(struct default_engine *engine,
+#else
+void btree_elem_release(struct default_engine *engine,
+#endif
                         btree_elem_item **elem_array, const int elem_count)
 {
     int cnt = 0;
@@ -7025,7 +7103,11 @@ ENGINE_ERROR_CODE btree_elem_get(struct default_engine *engine,
                                  const bkey_range *bkrange, const eflag_filter *efilter,
                                  const uint32_t offset, const uint32_t req_count,
                                  const bool delete, const bool drop_if_empty,
+#ifdef USE_BLOCK_ALLOCATOR
+                                 eitem **elem_list, uint32_t *elem_count,
+#else
                                  btree_elem_item **elem_array, uint32_t *elem_count,
+#endif
                                  uint32_t *access_count,
                                  uint32_t *flags, bool *dropped_trimmed)
 {
@@ -7050,10 +7132,16 @@ ENGINE_ERROR_CODE btree_elem_get(struct default_engine *engine,
                 (info->bktype == BKEY_TYPE_BINARY && bkrange->from_nbkey == 0)) {
                 ret = ENGINE_EBADBKEY; break;
             }
-            *elem_count = do_btree_elem_get(engine, info, bkrtype, bkrange, efilter,
-                                            offset, req_count, delete,
-                                            elem_array, access_count, &potentialbkeytrim);
-            if (*elem_count > 0) {
+#ifdef USE_BLOCK_ALLOCATOR
+            ret = do_btree_elem_get(engine, info, bkrtype, bkrange, efilter,
+                                    offset, req_count, delete,
+                                    elem_list, elem_count, access_count, &potentialbkeytrim);
+#else
+            ret = do_btree_elem_get(engine, info, bkrtype, bkrange, efilter,
+                                    offset, req_count, delete,
+                                    elem_array, access_count, &potentialbkeytrim);
+#endif
+            if (ret == ENGINE_SUCCESS) {
                 if (delete) {
                     if (info->ccnt == 0 && drop_if_empty) {
                         assert(info->root == NULL);

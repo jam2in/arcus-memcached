@@ -527,7 +527,16 @@ btree_elem_item *btree_elem_alloc(struct default_engine *engine,
                                   const int nbkey, const int neflag, const int nbytes,
                                   const void *cookie);
 
+#ifdef USE_BLOCK_ALLOCATOR
 void btree_elem_release(struct default_engine *engine,
+                        btree_elem_item *elem);
+
+void btree_elem_block_release(struct default_engine *engine,
+                              eitem *elem_list, const int elem_count);
+void btree_elem_array_release(struct default_engine *engine,
+#else
+void btree_elem_release(struct default_engine *engine,
+#endif
                         btree_elem_item **elem_array, const int elem_count);
 
 ENGINE_ERROR_CODE btree_elem_insert(struct default_engine *engine,
@@ -560,7 +569,11 @@ ENGINE_ERROR_CODE btree_elem_get(struct default_engine *engine,
                                  const bkey_range *bkrange, const eflag_filter *efilter,
                                  const uint32_t offset, const uint32_t req_count,
                                  const bool delete, const bool drop_if_empty,
+#ifdef USE_BLOCK_ALLOCATOR
+                                 eitem **elem_list, uint32_t *elem_count,
+#else
                                  btree_elem_item **elem_array, uint32_t *elem_count,
+#endif
                                  uint32_t *access_count,
                                  uint32_t *flags, bool *dropped_trimmed);
 
