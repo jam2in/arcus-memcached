@@ -416,8 +416,16 @@ ENGINE_ERROR_CODE list_struct_create(struct default_engine *engine,
 list_elem_item *list_elem_alloc(struct default_engine *engine,
                                 const int nbytes, const void *cookie);
 
+#ifdef USE_BLOCK_ALLOCATOR
+void list_elem_release(struct default_engine *engine,
+                       list_elem_item *elem);
+
+void list_elem_block_release(struct default_engine *engine,
+                             eitem *elem_list, const int eitem_count);
+#else
 void list_elem_release(struct default_engine *engine,
                        list_elem_item **elem_array, const int elem_count);
+#endif
 
 ENGINE_ERROR_CODE list_elem_insert(struct default_engine *engine,
                                    const char *key, const size_t nkey,
@@ -435,7 +443,11 @@ ENGINE_ERROR_CODE list_elem_get(struct default_engine *engine,
                                 const char *key, const size_t nkey,
                                 int from_index, int to_index,
                                 const bool delete, const bool drop_if_empty,
+#ifdef USE_BLOCK_ALLOCATOR
+                                eitem **elem_list, uint32_t *elem_count,
+#else
                                 list_elem_item **elem_array, uint32_t *elem_count,
+#endif
                                 uint32_t *flags, bool *dropped);
 
 ENGINE_ERROR_CODE set_struct_create(struct default_engine *engine,
@@ -445,8 +457,16 @@ ENGINE_ERROR_CODE set_struct_create(struct default_engine *engine,
 set_elem_item *set_elem_alloc(struct default_engine *engine,
                               const int nbytes, const void *cookie);
 
+#ifdef USE_BLOCK_ALLOCATOR
+void set_elem_release(struct default_engine *engine,
+                      set_elem_item *eitem);
+
+void set_elem_block_release(struct default_engine *engine,
+                      eitem *eitem_list, const int elem_count);
+#else
 void set_elem_release(struct default_engine *engine,
                       set_elem_item **elem_array, const int elem_count);
+#endif
 
 ENGINE_ERROR_CODE set_elem_insert(struct default_engine *engine,
                                   const char *key, const size_t nkey,
@@ -468,7 +488,11 @@ ENGINE_ERROR_CODE set_elem_exist(struct default_engine *engine,
 ENGINE_ERROR_CODE set_elem_get(struct default_engine *engine,
                                const char *key, const size_t nkey, const uint32_t count,
                                const bool delete, const bool drop_if_empty,
+#ifdef USE_BLOCK_ALLOCATOR
+                               eitem **elem_list, uint32_t *elem_count,
+#else
                                set_elem_item **elem_array, uint32_t *elem_count,
+#endif
                                uint32_t *flags, bool *dropped);
 
 #ifdef MAP_COLLECTION_SUPPORT
@@ -479,8 +503,16 @@ ENGINE_ERROR_CODE map_struct_create(struct default_engine *engine,
 map_elem_item *map_elem_alloc(struct default_engine *engine, const int nfield,
                               const int nbytes, const void *cookie);
 
+#ifdef USE_BLOCK_ALLOCATOR
+void map_elem_release(struct default_engine *engine,
+                      map_elem_item *eitem);
+
+void map_elem_block_release(struct default_engine *engine,
+                            eitem *eitem_list, const int elem_count);
+#else
 void map_elem_release(struct default_engine *engine,
                       map_elem_item **elem_array, const int elem_count);
+#endif
 
 ENGINE_ERROR_CODE map_elem_insert(struct default_engine *engine,
                                   const char *key, const size_t nkey,
@@ -503,7 +535,11 @@ ENGINE_ERROR_CODE map_elem_delete(struct default_engine *engine,
 ENGINE_ERROR_CODE map_elem_get(struct default_engine *engine,
                                const char *key, const size_t nkey,
                                const int numfields, const field_t *flist, const bool delete,
+#ifdef USE_BLOCK_ALLOCATOR
+                               const bool drop_if_empty, eitem **elem_list,
+#else
                                const bool drop_if_empty, map_elem_item **elem_array,
+#endif
                                uint32_t *elem_count, uint32_t *flags, bool *dropped);
 #endif
 
@@ -515,8 +551,19 @@ btree_elem_item *btree_elem_alloc(struct default_engine *engine,
                                   const int nbkey, const int neflag, const int nbytes,
                                   const void *cookie);
 
+#ifdef USE_BLOCK_ALLOCATOR
+void btree_elem_release(struct default_engine *engine,
+                        btree_elem_item *elem);
+
+void btree_elem_block_release(struct default_engine *engine,
+                              eitem *elem_list, const int elem_count);
+
+void btree_elem_array_release(struct default_engine *engine,
+                              btree_elem_item **elem_array, const int elem_count);
+#else
 void btree_elem_release(struct default_engine *engine,
                         btree_elem_item **elem_array, const int elem_count);
+#endif
 
 ENGINE_ERROR_CODE btree_elem_insert(struct default_engine *engine,
                                     const char *key, const size_t nkey,
@@ -548,7 +595,11 @@ ENGINE_ERROR_CODE btree_elem_get(struct default_engine *engine,
                                  const bkey_range *bkrange, const eflag_filter *efilter,
                                  const uint32_t offset, const uint32_t req_count,
                                  const bool delete, const bool drop_if_empty,
+#ifdef USE_BLOCK_ALLOCATOR
+                                 eitem **elem_list, uint32_t *elem_count, uint32_t srt_count,
+#else
                                  btree_elem_item **elem_array, uint32_t *elem_count,
+#endif
                                  uint32_t *access_count,
                                  uint32_t *flags, bool *dropped_trimmed);
 
@@ -565,13 +616,21 @@ ENGINE_ERROR_CODE btree_posi_find_with_get(struct default_engine *engine,
                                            const char *key, const size_t nkey,
                                            const bkey_range *bkrange, ENGINE_BTREE_ORDER order,
                                            const int count, int *position,
+#ifdef USE_BLOCK_ALLOCATOR
+                                           eitem **elem_list, uint32_t *elem_count,
+#else
                                            btree_elem_item **elem_array, uint32_t *elem_count,
+#endif
                                            uint32_t *elem_index, uint32_t *flags);
 
 ENGINE_ERROR_CODE btree_elem_get_by_posi(struct default_engine *engine,
                                   const char *key, const size_t nkey,
                                   ENGINE_BTREE_ORDER order, int from_posi, int to_posi,
+#ifdef USE_BLOCK_ALLOCATOR
+                                  eitem **elem_list, uint32_t *elem_count, uint32_t *flags);
+#else
                                   btree_elem_item **elem_array, uint32_t *elem_count, uint32_t *flags);
+#endif
 
 #ifdef SUPPORT_BOP_SMGET
 #ifdef JHPARK_OLD_SMGET_INTERFACE
@@ -580,7 +639,11 @@ ENGINE_ERROR_CODE btree_elem_smget_old(struct default_engine *engine,
                                    token_t *key_array, const int key_count,
                                    const bkey_range *bkrange, const eflag_filter *efilter,
                                    const uint32_t offset, const uint32_t count,
+#ifdef USE_BLOCK_ALLOCATOR
+                                   eitem **elem_list, uint32_t *kfnd_array,
+#else
                                    btree_elem_item **elem_array, uint32_t *kfnd_array,
+#endif
                                    uint32_t *flag_array, uint32_t *elem_count,
                                    uint32_t *missed_key_array, uint32_t *missed_key_count,
                                    bool *trimmed, bool *duplicated);

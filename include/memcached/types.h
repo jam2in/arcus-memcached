@@ -37,6 +37,7 @@ struct iovec {
 #define JHPARK_OLD_SMGET_INTERFACE
 #define CONFIG_MAX_COLLECTION_SIZE
 #define MAX_EFLAG_COMPARE_COUNT 100
+#define USE_BLOCK_ALLOCATOR
 
 #define JHPARK_KEY_DUMP
 
@@ -327,7 +328,11 @@ extern "C" {
 
     /* smget result structure */
     typedef struct {
+#ifdef USE_BLOCK_ALLOCATOR
+        eitem        *elem_list;  /* found elements in smget */
+#else
         eitem       **elem_array; /* found elements in smget */
+#endif
         smget_ehit_t *elem_kinfo; /* key info of found elements */
         smget_emis_t *miss_kinfo; /* key info of missed keys */
         smget_emis_t *trim_kinfo; /* key info of trimmed keys */
