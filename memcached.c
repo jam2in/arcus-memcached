@@ -1986,8 +1986,6 @@ static void process_mop_get_complete(conn *c)
         break;
 #ifdef USE_BLOCK_ALLOCATOR
     case ENGINE_ENOMEM:
-        if (c->ewouldblock)
-            c->ewouldblock = false;
         out_string(c, "SERVER_ERROR out of memory getting map elements");
         break;
 #endif
@@ -9954,8 +9952,6 @@ static void process_lop_get(conn *c, char *key, size_t nkey,
         break;
 #ifdef USE_BLOCK_ALLOCATOR
     case ENGINE_ENOMEM:
-        if (c->ewouldblock)
-            c->ewouldblock = false;
         out_string(c, "SERVER_ERROR out of memory getting list elements");
         break;
 #endif
@@ -10427,8 +10423,6 @@ static void process_sop_get(conn *c, char *key, size_t nkey, uint32_t count,
         break;
 #ifdef USE_BLOCK_ALLOCATOR
     case ENGINE_ENOMEM:
-        if (c->ewouldblock)
-            c->ewouldblock = false;
         out_string(c, "SERVER_ERROR out of memory getting set elements");
         break;
 #endif
@@ -10869,8 +10863,6 @@ static void process_bop_get(conn *c, char *key, size_t nkey,
         break;
 #ifdef USE_BLOCK_ALLOCATOR
     case ENGINE_ENOMEM:
-        if (c->ewouldblock)
-            c->ewouldblock = false;
         out_string(c, "SERVER_ERROR out of memory getting btree elements");
         break;
 #endif
@@ -11123,8 +11115,6 @@ static void process_bop_pwg(conn *c, char *key, size_t nkey, const bkey_range *b
         break;
 #ifdef USE_BLOCK_ALLOCATOR
     case ENGINE_ENOMEM:
-        if (c->ewouldblock)
-            c->ewouldblock = false;
         out_string(c, "SERVER_ERROR out of memory getting btree elements");
         break;
 #endif
@@ -11290,8 +11280,6 @@ static void process_bop_gbp(conn *c, char *key, size_t nkey, ENGINE_BTREE_ORDER 
         break;
 #ifdef USE_BLOCK_ALLOCATOR
     case ENGINE_ENOMEM:
-        if (c->ewouldblock)
-            c->ewouldblock = false;
         out_string(c, "SERVER_ERROR out of memory getting btree elements");
         break;
 #endif
