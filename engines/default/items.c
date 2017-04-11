@@ -2252,7 +2252,7 @@ static int do_set_elem_traverse_dfs(struct default_engine *engine,
             set_elem_item *elem = node->htab[hidx];
             while (elem != NULL) {
 #ifdef USE_BLOCK_ALLOCATOR
-                if (elem_list != NULL) { /* this process use only sop_get process. not sop_delete */
+                if (elem_list != NULL) { /* this process is only used for sop_get process. not sop_delete */
                     if ((*tot_cnt % EITEMS_PER_BLOCK == 0) && (*tot_cnt != 0)) {
                         blk->next = (mem_block_t *)allocate_single_block();
                         if (blk->next == NULL) {
@@ -2344,7 +2344,7 @@ static uint32_t do_set_elem_get(struct default_engine *engine,
     uint32_t fcnt = 0;
     if (info->root != NULL) {
 #ifdef USE_BLOCK_ALLOCATOR
-        int nomem_flag = 0;
+        int tot_cnt = 0;
         mem_block_t *blk = (mem_block_t*)allocate_single_block();
         if (blk == NULL){
             *elem_count = 0;
@@ -2352,8 +2352,8 @@ static uint32_t do_set_elem_get(struct default_engine *engine,
         }
         *elem_list = blk;
 
-        fcnt = do_set_elem_traverse_dfs(engine, info, info->root, count, delete, elem_list, &nomem_flag);
-        if (nomem_flag == -1) {
+        fcnt = do_set_elem_traverse_dfs(engine, info, info->root, count, delete, elem_list, &tot_cnt);
+        if (tot_cnt == -1) {
             *elem_count = fcnt;
             return ENGINE_ENOMEM;
         }
@@ -9432,7 +9432,7 @@ static uint32_t do_map_elem_get(struct default_engine *engine,
 
     if (info->root != NULL) {
 #ifdef USE_BLOCK_ALLOCATOR
-        int nomem_flag = 0;
+        int tot_cnt = 0;
         mem_block_t *blk = (mem_block_t *)allocate_single_block();
         if (blk == NULL) {
             *elem_count = 0;
@@ -9442,8 +9442,8 @@ static uint32_t do_map_elem_get(struct default_engine *engine,
 #endif
         if (numfields == 0) {
 #ifdef USE_BLOCK_ALLOCATOR
-            array_cnt = do_map_elem_traverse_dfs_bycnt(engine, info, info->root, 0, delete, elem_list, &nomem_flag, ELEM_DELETE_NORMAL);
-            if (nomem_flag == -1) {
+            array_cnt = do_map_elem_traverse_dfs_bycnt(engine, info, info->root, 0, delete, elem_list, &tot_cnt, ELEM_DELETE_NORMAL);
+            if (tot_cnt == -1) {
                 *elem_count = array_cnt;
                 return ENGINE_ENOMEM;
             }
