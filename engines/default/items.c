@@ -9194,7 +9194,7 @@ static bool do_map_elem_traverse_dfs_byfield(struct default_engine *engine,
 #ifdef USE_BLOCK_ALLOCATOR
                     if (elem_list) {
                         elem->refcount++;
-                        *elem_list = elem;
+                        elem_list[0] = elem;
                     }
 #else
                     if (elem_array) {
