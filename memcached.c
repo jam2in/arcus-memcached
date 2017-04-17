@@ -10398,7 +10398,9 @@ static void process_sop_get(conn *c, char *key, size_t nkey, uint32_t count,
             c->msgcurr     = 0;
         } else { /* ENGINE_ENOMEM */
             STATS_NOKEY(c, cmd_sop_get);
-#ifndef USE_BLOCK_ALLOCATOR
+#ifdef USE_BLOCK_ALLOCATOR
+            mc_engine.v1->set_elem_block_release(mc_engine.v0, c, elem_list, elem_count);
+#else
             mc_engine.v1->set_elem_release(mc_engine.v0, c, elem_array, elem_count);
 #endif
             free(respbuf);
@@ -10433,14 +10435,11 @@ static void process_sop_get(conn *c, char *key, size_t nkey, uint32_t count,
         else handle_unexpected_errorcode_ascii(c, ret);
     }
 
-#ifdef USE_BLOCK_ALLOCATOR
-    if (ret != ENGINE_SUCCESS && elem_list != NULL) {
-        mc_engine.v1->set_elem_block_release(mc_engine.v0, c, elem_list, elem_count);
-#else
+#ifndef USE_BLOCK_ALLOCATOR
     if (ret != ENGINE_SUCCESS && elem_array != NULL) {
         free((void *)elem_array);
-#endif
     }
+#endif
 }
 
 static void process_sop_prepare_nread(conn *c, int cmd, size_t vlen, char *key, size_t nkey) {

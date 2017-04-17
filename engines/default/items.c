@@ -7226,6 +7226,21 @@ ENGINE_ERROR_CODE set_elem_get(struct default_engine *engine,
                 }
                 *flags = it->flags;
 #ifdef USE_BLOCK_ALLOCATOR
+            } else if (ret == ENGINE_ENOMEM) { /* item & block release */
+                int cnt = 0;
+                mem_block_t *blk = *elem_list;
+                while (cnt < *elem_count) {
+                    do_set_elem_release(engine, (set_elem_item *)(blk->items[cnt % EITEMS_PER_BLOCK]));
+                    if (cnt % EITEMS_PER_BLOCK == EITEMS_PER_BLOCK - 1) {
+                        blk = blk->next;
+                    }
+                    cnt++;
+                    if ((cnt % 100) == 0 && cnt < *elem_count) {
+                        pthread_mutex_unlock(&engine->cache_lock);
+                        pthread_mutex_lock(&engine->cache_lock);
+                    }
+                }
+                free_block_list(*elem_list, -1);
             }
 #else
             } else {
