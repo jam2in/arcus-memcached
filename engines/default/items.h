@@ -686,6 +686,9 @@ void        item_set_cas(const hash_item* item, uint64_t val);
 const void* item_get_key(const hash_item* item);
 char*       item_get_data(const hash_item* item);
 const void* item_get_meta(const hash_item* item);
+#ifdef USE_BLOCK_ALLOCATOR
+eitem *     item_get_block_elem(mem_block_t **blk, uint32_t elem_num);
+#endif
 
 /*
  * Check linked status

@@ -8285,6 +8285,18 @@ const void* item_get_meta(const hash_item* item)
         return NULL;
 }
 
+#ifdef USE_BLOCK_ALLOCATOR
+/*
+ * block allocator API
+ */
+eitem* item_get_block_elem(mem_block_t **blk, uint32_t elem_num)
+{
+    eitem *elem = (*blk)->items[elem_num % EITEMS_PER_BLOCK];
+    if (elem_num % EITEMS_PER_BLOCK == EITEMS_PER_BLOCK - 1) *blk = (*blk)->next;
+    return elem;
+}
+#endif
+
 /****
 uint8_t item_get_clsid(const hash_item* item)
 {

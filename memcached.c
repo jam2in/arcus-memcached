@@ -10344,6 +10344,7 @@ static void process_sop_get(conn *c, char *key, size_t nkey, uint32_t count,
         char *respptr;
 #ifdef USE_BLOCK_ALLOCATOR
         mem_block_t *blk = (mem_block_t *)elem_list;
+        eitem *elem;
 #endif
 
         do {
@@ -10362,8 +10363,8 @@ static void process_sop_get(conn *c, char *key, size_t nkey, uint32_t count,
 
             for (i = 0; i < elem_count; i++) {
 #ifdef USE_BLOCK_ALLOCATOR
-                mc_engine.v1->get_elem_info(mc_engine.v0, c, ITEM_TYPE_SET, blk->items[i % EITEMS_PER_BLOCK], &info);
-                if ( i % EITEMS_PER_BLOCK == EITEMS_PER_BLOCK - 1 ) blk = blk->next;
+                elem = mc_engine.v1->get_block_elem(mc_engine.v0, c, &blk, i);
+                mc_engine.v1->get_elem_info(mc_engine.v0, c, ITEM_TYPE_SET, elem, &info);
 #else
                 mc_engine.v1->get_elem_info(mc_engine.v0, c, ITEM_TYPE_SET, elem_array[i], &info);
 #endif

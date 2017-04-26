@@ -736,6 +736,23 @@ extern "C" {
                                   const char *filepath);
 #endif
 
+#ifdef USE_BLOCK_ALLOCATOR
+        /*
+         * Used to read elements in blocks
+         *
+         * @paran handle the engine handle
+         * @param cookie the cookie provided by the frontend
+         * @param blk the current block containing the element
+         * @param elem_num element number to read from block
+         *
+         * @return element corresponding to elem_num
+         */
+        eitem *(*get_block_elem)(ENGINE_HANDLE* handle,
+                                const void* cookie,
+                                mem_block_t **blk,
+                                uint32_t elem_num);
+#endif
+
         /**
          * Any unknown command will be considered engine specific.
          *

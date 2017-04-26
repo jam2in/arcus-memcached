@@ -1276,6 +1276,18 @@ default_dump(ENGINE_HANDLE* handle, const void* cookie,
 }
 #endif
 
+#ifdef USE_BLOCK_ALLOCATOR
+/*
+ * block allocator API
+ */
+static eitem *
+default_get_block_elem(ENGINE_HANDLE* handle, const void* cookie,
+                       mem_block_t **blk, uint32_t elem_num)
+{
+    return item_get_block_elem(blk, elem_num);
+}
+#endif
+
 /*
  * Config API
  */
@@ -1699,6 +1711,10 @@ create_instance(uint64_t interface, GET_SERVER_API get_server_api,
          .cachedump        = default_cachedump,
 #ifdef JHPARK_KEY_DUMP
          .dump             = default_dump,
+#endif
+#ifdef USE_BLOCK_ALLOCATOR
+         /* block allocator API */
+         .get_block_elem   = default_get_block_elem,
 #endif
          /* Config API */
          .set_config       = default_set_config,
