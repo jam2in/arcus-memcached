@@ -462,7 +462,7 @@ void set_elem_release(struct default_engine *engine,
                       set_elem_item *eitem);
 
 void set_elem_block_release(struct default_engine *engine,
-                      eitem *eitem_list, const int elem_count);
+                      block_result_t *blkret);
 #else
 void set_elem_release(struct default_engine *engine,
                       set_elem_item **elem_array, const int elem_count);
@@ -489,7 +489,7 @@ ENGINE_ERROR_CODE set_elem_get(struct default_engine *engine,
                                const char *key, const size_t nkey, const uint32_t count,
                                const bool delete, const bool drop_if_empty,
 #ifdef USE_BLOCK_ALLOCATOR
-                               eitem **elem_list, uint32_t *elem_count,
+                               block_result_t *blkret,
 #else
                                set_elem_item **elem_array, uint32_t *elem_count,
 #endif
@@ -687,7 +687,7 @@ const void* item_get_key(const hash_item* item);
 char*       item_get_data(const hash_item* item);
 const void* item_get_meta(const hash_item* item);
 #ifdef USE_BLOCK_ALLOCATOR
-eitem *     item_get_block_elem(mem_block_t **blk, uint32_t elem_num);
+eitem *     item_get_block_elem(block_result_t *blkret);
 #endif
 
 /*

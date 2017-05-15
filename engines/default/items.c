@@ -2200,7 +2200,7 @@ static int do_set_elem_traverse_dfs(struct default_engine *engine,
                                     set_meta_info *info, set_hash_node *node,
                                     const uint32_t count, const bool delete,
 #ifdef USE_BLOCK_ALLOCATOR
-                                    eitem **elem_list, int *tot_cnt)
+                                    block_result_t *blkret, int *tot_cnt)
 #else
                                     set_elem_item **elem_array)
 #endif
@@ -2211,8 +2211,8 @@ static int do_set_elem_traverse_dfs(struct default_engine *engine,
 #ifdef USE_BLOCK_ALLOCATOR
     int i;
     mem_block_t *blk = NULL;
-    if (elem_list != NULL)
-        blk = *elem_list;
+    if (blkret != NULL && blkret->root_blk != NULL)
+        blk = blkret->root_blk;
 #endif
 
     if (node->tot_hash_cnt > 0) {
@@ -2222,8 +2222,8 @@ static int do_set_elem_traverse_dfs(struct default_engine *engine,
                 if (count > 0) rcnt = count - fcnt;
 #ifdef USE_BLOCK_ALLOCATOR
                 fcnt += do_set_elem_traverse_dfs(engine, info, child_node, rcnt, delete,
-                                            (elem_list==NULL ? NULL : elem_list), tot_cnt);
-                if ( elem_list != NULL && *tot_cnt == -1) return fcnt; /* *tot_cnt == -1 mean ENGINE_ENOMEM */
+                                            (blkret==NULL ? NULL : blkret), tot_cnt);
+                if (blkret != NULL && *tot_cnt == -1) return fcnt; /* *tot_cnt == -1 mean ENGINE_ENOMEM */
 #else
                 fcnt += do_set_elem_traverse_dfs(engine, info, child_node, rcnt, delete,
                                             (elem_array==NULL ? NULL : &elem_array[fcnt]));
@@ -2242,7 +2242,7 @@ static int do_set_elem_traverse_dfs(struct default_engine *engine,
     assert(count == 0 || fcnt < count);
 
 #ifdef USE_BLOCK_ALLOCATOR
-    if (elem_list != NULL) {
+    if (blkret != NULL) {
         for (i = 0; i < (*tot_cnt / EITEMS_PER_BLOCK) - (*tot_cnt % EITEMS_PER_BLOCK == 0 ? 1 : 0); i++)
             blk = blk->next; /* setting starting block */
     }
@@ -2252,7 +2252,7 @@ static int do_set_elem_traverse_dfs(struct default_engine *engine,
             set_elem_item *elem = node->htab[hidx];
             while (elem != NULL) {
 #ifdef USE_BLOCK_ALLOCATOR
-                if (elem_list != NULL) { /* this process is only used for sop_get process. not sop_delete */
+                if (blkret != NULL) { /* this process is only used for sop_get process. not sop_delete */
                     if ((*tot_cnt % EITEMS_PER_BLOCK == 0) && (*tot_cnt != 0)) {
                         blk->next = (mem_block_t *)allocate_single_block();
                         if (blk->next == NULL) {
@@ -2268,7 +2268,7 @@ static int do_set_elem_traverse_dfs(struct default_engine *engine,
 
                 fcnt++;
                 if (delete) do_set_elem_unlink(engine, info, node, hidx, NULL, elem,
-                                               (elem_list==NULL ? ELEM_DELETE_COLL
+                                               (blkret==NULL ? ELEM_DELETE_COLL
                                                                  : ELEM_DELETE_NORMAL));
 #else
                 if (elem_array) {
@@ -2336,7 +2336,7 @@ static uint32_t do_set_elem_get(struct default_engine *engine,
 #endif
                                 set_meta_info *info, const uint32_t count, const bool delete,
 #ifdef USE_BLOCK_ALLOCATOR
-                                eitem **elem_list, uint32_t *elem_count)
+                                block_result_t *blkret)
 #else
                                 set_elem_item **elem_array)
 #endif
@@ -2347,14 +2347,14 @@ static uint32_t do_set_elem_get(struct default_engine *engine,
         int tot_cnt = 0;
         mem_block_t *blk = (mem_block_t*)allocate_single_block();
         if (blk == NULL){
-            *elem_count = 0;
+            blkret->totelem = 0;
             return ENGINE_ENOMEM;
         }
-        *elem_list = blk;
+        blkret->root_blk = blk;
 
-        fcnt = do_set_elem_traverse_dfs(engine, info, info->root, count, delete, elem_list, &tot_cnt);
+        fcnt = do_set_elem_traverse_dfs(engine, info, info->root, count, delete, blkret, &tot_cnt);
         if (tot_cnt == -1) {
-            *elem_count = fcnt;
+            blkret->totelem = fcnt;
             return ENGINE_ENOMEM;
         }
 #else
@@ -2365,7 +2365,7 @@ static uint32_t do_set_elem_get(struct default_engine *engine,
         }
     }
 #ifdef USE_BLOCK_ALLOCATOR
-    *elem_count = fcnt;
+    blkret->totelem = fcnt;
     if (fcnt > 0) {
         return ENGINE_SUCCESS;
     } else {
@@ -7062,23 +7062,23 @@ void set_elem_release(struct default_engine *engine, set_elem_item *eitem)
 }
 
 void set_elem_block_release(struct default_engine *engine,
-                            eitem *eitem_list, const int elem_count)
+                            block_result_t *blkret)
 {
     int cnt = 0;
-    mem_block_t *blk = eitem_list;
+    mem_block_t *blk = blkret->root_blk;
     pthread_mutex_lock(&engine->cache_lock);
-    while (cnt < elem_count){
+    while (cnt < blkret->totelem){
         do_set_elem_release(engine, (set_elem_item *)(blk->items[cnt % EITEMS_PER_BLOCK]));
         if (cnt % EITEMS_PER_BLOCK == EITEMS_PER_BLOCK - 1) {
             blk = blk->next;
         }
         cnt++;
-        if ((cnt % 100) == 0 && cnt < elem_count) {
+        if ((cnt % 100) == 0 && cnt < blkret->totelem) {
             pthread_mutex_unlock(&engine->cache_lock);
             pthread_mutex_lock(&engine->cache_lock);
         }
     }
-    free_block_list(eitem_list, -1);
+    free_block_list(blkret->root_blk, -1);
     pthread_mutex_unlock(&engine->cache_lock);
 }
 #else
@@ -7192,7 +7192,7 @@ ENGINE_ERROR_CODE set_elem_get(struct default_engine *engine,
                                const char *key, const size_t nkey, const uint32_t count,
                                const bool delete, const bool drop_if_empty,
 #ifdef USE_BLOCK_ALLOCATOR
-                               eitem **elem_list, uint32_t *elem_count,
+                               block_result_t *blkret,
 #else
                                set_elem_item **elem_array, uint32_t *elem_count,
 #endif
@@ -7211,8 +7211,10 @@ ENGINE_ERROR_CODE set_elem_get(struct default_engine *engine,
                 ret = ENGINE_UNREADABLE; break;
             }
 #ifdef USE_BLOCK_ALLOCATOR
-            ret = do_set_elem_get(engine, info, count, delete, elem_list, elem_count);
+            ret = do_set_elem_get(engine, info, count, delete, blkret);
             if (ret == ENGINE_SUCCESS) {
+                blkret->curr_blk = blkret->root_blk;
+                blkret->readelem = 0;
 #else
             *elem_count = do_set_elem_get(engine, info, count, delete, elem_array);
             if (*elem_count > 0) {
@@ -7228,19 +7230,19 @@ ENGINE_ERROR_CODE set_elem_get(struct default_engine *engine,
 #ifdef USE_BLOCK_ALLOCATOR
             } else if (ret == ENGINE_ENOMEM) { /* item & block release */
                 int cnt = 0;
-                mem_block_t *blk = *elem_list;
-                while (cnt < *elem_count) {
+                mem_block_t *blk = blkret->root_blk;
+                while (cnt < blkret->totelem) {
                     do_set_elem_release(engine, (set_elem_item *)(blk->items[cnt % EITEMS_PER_BLOCK]));
                     if (cnt % EITEMS_PER_BLOCK == EITEMS_PER_BLOCK - 1) {
                         blk = blk->next;
                     }
                     cnt++;
-                    if ((cnt % 100) == 0 && cnt < *elem_count) {
+                    if ((cnt % 100) == 0 && cnt < blkret->totelem) {
                         pthread_mutex_unlock(&engine->cache_lock);
                         pthread_mutex_lock(&engine->cache_lock);
                     }
                 }
-                free_block_list(*elem_list, -1);
+                free_block_list(blkret->root_blk, -1);
             }
 #else
             } else {
@@ -8289,10 +8291,10 @@ const void* item_get_meta(const hash_item* item)
 /*
  * block allocator API
  */
-eitem* item_get_block_elem(mem_block_t **blk, uint32_t elem_num)
+eitem* item_get_block_elem(block_result_t *blkret)
 {
-    eitem *elem = (*blk)->items[elem_num % EITEMS_PER_BLOCK];
-    if (elem_num % EITEMS_PER_BLOCK == EITEMS_PER_BLOCK - 1) *blk = (*blk)->next;
+    eitem *elem = (blkret->curr_blk)->items[blkret->readelem % EITEMS_PER_BLOCK];
+    if (blkret->readelem++ % EITEMS_PER_BLOCK == EITEMS_PER_BLOCK - 1) blkret->curr_blk = (blkret->curr_blk)->next;
     return elem;
 }
 #endif

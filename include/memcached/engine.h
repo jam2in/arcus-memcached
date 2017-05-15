@@ -401,7 +401,7 @@ extern "C" {
                                  eitem *eitem);
 
         void (*set_elem_block_release)(ENGINE_HANDLE* handle, const void *cookie,
-                                       eitem *eitem_list, const int eitem_count);
+                                       block_result_t *blkret);
 #else
         void (*set_elem_release)(ENGINE_HANDLE* handle, const void *cookie,
                                  eitem **eitem_array, const int eitem_count);
@@ -427,7 +427,11 @@ extern "C" {
                                           const void* key, const int nkey,
                                           const uint32_t count,
                                           const bool delete, const bool drop_if_empty,
+#ifdef USE_BLOCK_ALLOCATOR
+                                          block_result_t *blkret,
+#else
                                           eitem** eitem, uint32_t* eitem_count,
+#endif
                                           uint32_t* flags, bool* dropped,
                                           uint16_t vbucket);
 
@@ -742,15 +746,13 @@ extern "C" {
          *
          * @paran handle the engine handle
          * @param cookie the cookie provided by the frontend
-         * @param blk the current block containing the element
-         * @param elem_num element number to read from block
+         * @param blkret is structure containing the overall contents of the block to be read
          *
          * @return element corresponding to elem_num
          */
         eitem *(*get_block_elem)(ENGINE_HANDLE* handle,
                                 const void* cookie,
-                                mem_block_t **blk,
-                                uint32_t elem_num);
+                                block_result_t *blkret);
 #endif
 
         /**

@@ -771,7 +771,7 @@ static void conn_coll_eitem_free(conn *c) {
         break;
       case OPERATION_SOP_GET:
 #ifdef USE_BLOCK_ALLOCATOR
-        mc_engine.v1->set_elem_block_release(mc_engine.v0, c, c->coll_eitem, c->coll_ecount);
+        mc_engine.v1->set_elem_block_release(mc_engine.v0, c, c->coll_eitem);
 #else
         mc_engine.v1->set_elem_release(mc_engine.v0, c, c->coll_eitem, c->coll_ecount);
         free(c->coll_eitem);
@@ -5008,7 +5008,11 @@ static void process_bin_sop_get(conn *c) {
     }
 
     eitem  **elem_array = NULL;
+#ifdef USE_BLOCK_ALLOCATOR
+    uint32_t elem_count = 0;
+#else
     uint32_t elem_count;
+#endif
     uint32_t flags, i;
     bool     dropped;
     int      need_size;
@@ -5025,7 +5029,11 @@ static void process_bin_sop_get(conn *c) {
     ret = mc_engine.v1->set_elem_get(mc_engine.v0, c, key, nkey, req_count,
                                      (bool)req->message.body.delete,
                                      (bool)req->message.body.drop,
+#ifdef USE_BLOCK_ALLOCATOR
+                                     *elem_array, &flags, &dropped,
+#else
                                      elem_array, &elem_count, &flags, &dropped,
+#endif
                                      c->binary_header.request.vbucket);
     if (ret == ENGINE_EWOULDBLOCK) {
         c->ewouldblock = true;
@@ -5084,7 +5092,7 @@ static void process_bin_sop_get(conn *c) {
         } else {
             STATS_NOKEY(c, cmd_sop_get);
 #ifdef USE_BLOCK_ALLOCATOR
-            mc_engine.v1->set_elem_block_release(mc_engine.v0, c, elem_array, elem_count);
+            mc_engine.v1->set_elem_block_release(mc_engine.v0, c, *elem_array);
 #else
             mc_engine.v1->set_elem_release(mc_engine.v0, c, elem_array, elem_count);
 #endif
@@ -10273,11 +10281,11 @@ static void process_sop_get(conn *c, char *key, size_t nkey, uint32_t count,
                             bool delete, bool drop_if_empty)
 {
 #ifdef USE_BLOCK_ALLOCATOR
-    eitem *elem_list = NULL;
+    block_result_t blkret;
 #else
     eitem  **elem_array = NULL;
-#endif
     uint32_t elem_count;
+#endif
     uint32_t req_count = count;
     uint32_t flags, i;
     bool     dropped;
@@ -10290,7 +10298,7 @@ static void process_sop_get(conn *c, char *key, size_t nkey, uint32_t count,
     if (req_count <= 0 || req_count > MAX_SET_SIZE) req_count = MAX_SET_SIZE;
 #ifdef USE_BLOCK_ALLOCATOR
     ret = mc_engine.v1->set_elem_get(mc_engine.v0, c, key, nkey, req_count,
-                                     delete, drop_if_empty, &elem_list, &elem_count,
+                                     delete, drop_if_empty, &blkret,
                                      &flags, &dropped, 0);
 #else
     need_size = req_count * sizeof(eitem*);
@@ -10315,12 +10323,20 @@ static void process_sop_get(conn *c, char *key, size_t nkey, uint32_t count,
 #ifdef DETECT_LONG_QUERY
     /* long query detection */
     if (lqdetect_in_use && ret == ENGINE_SUCCESS) {
+#ifdef USE_BLOCK_ALLOCATOR
+        if (lqdetect_discriminant(blkret.totelem)) {
+#else
         if (lqdetect_discriminant(elem_count)) {
+#endif
             struct lq_detect_argument argument;
             char *bufptr = argument.range;
 
             snprintf(bufptr, 16, "%d", count);
+#ifdef USE_BLOCK_ALLOCATOR
+            argument.overhead = blkret.totelem;
+#else
             argument.overhead = elem_count;
+#endif
             argument.count = count;
             argument.delete_or_drop = 0;
             if (drop_if_empty) {
@@ -10343,29 +10359,38 @@ static void process_sop_get(conn *c, char *key, size_t nkey, uint32_t count,
         char *respbuf; /* response string buffer */
         char *respptr;
 #ifdef USE_BLOCK_ALLOCATOR
-        mem_block_t *blk = (mem_block_t *)elem_list;
         eitem *elem;
 #endif
 
         do {
+#ifdef USE_BLOCK_ALLOCATOR
+            need_size = ((2*lenstr_size) + 30) /* response head and tail size */
+                      + (blkret.totelem * (lenstr_size+2)); /* response body size */
+#else
             need_size = ((2*lenstr_size) + 30) /* response head and tail size */
                       + (elem_count * (lenstr_size+2)); /* response body size */
+#endif
             if ((respbuf = (char*)malloc(need_size)) == NULL) {
                 ret = ENGINE_ENOMEM; break;
             }
             respptr = respbuf;
 
+#ifdef USE_BLOCK_ALLOCATOR
+            sprintf(respptr, "VALUE %u %u\r\n", htonl(flags), blkret.totelem);
+#else
             sprintf(respptr, "VALUE %u %u\r\n", htonl(flags), elem_count);
+#endif
             if (add_iov(c, respptr, strlen(respptr)) != 0) {
                 ret = ENGINE_ENOMEM; break;
             }
             respptr += strlen(respptr);
 
-            for (i = 0; i < elem_count; i++) {
 #ifdef USE_BLOCK_ALLOCATOR
-                elem = mc_engine.v1->get_block_elem(mc_engine.v0, c, &blk, i);
+            for (i = 0; i < blkret.totelem; i++) {
+                elem = mc_engine.v1->get_block_elem(mc_engine.v0, c, &blkret);
                 mc_engine.v1->get_elem_info(mc_engine.v0, c, ITEM_TYPE_SET, elem, &info);
 #else
+            for (i = 0; i < elem_count; i++) {
                 mc_engine.v1->get_elem_info(mc_engine.v0, c, ITEM_TYPE_SET, elem_array[i], &info);
 #endif
                 sprintf(respptr, "%u ", info.nbytes-2);
@@ -10388,11 +10413,11 @@ static void process_sop_get(conn *c, char *key, size_t nkey, uint32_t count,
         if (ret == ENGINE_SUCCESS) {
             STATS_ELEM_HITS(c, sop_get, key, nkey);
 #ifdef USE_BLOCK_ALLOCATOR
-            c->coll_eitem  = (void *)elem_list;
+            c->coll_eitem  = &blkret;
 #else
             c->coll_eitem  = (void *)elem_array;
-#endif
             c->coll_ecount = elem_count;
+#endif
             c->coll_resps  = respbuf;
             c->coll_op     = OPERATION_SOP_GET;
             conn_set_state(c, conn_mwrite);
@@ -10400,7 +10425,7 @@ static void process_sop_get(conn *c, char *key, size_t nkey, uint32_t count,
         } else { /* ENGINE_ENOMEM */
             STATS_NOKEY(c, cmd_sop_get);
 #ifdef USE_BLOCK_ALLOCATOR
-            mc_engine.v1->set_elem_block_release(mc_engine.v0, c, elem_list, elem_count);
+            mc_engine.v1->set_elem_block_release(mc_engine.v0, c, &blkret);
 #else
             mc_engine.v1->set_elem_release(mc_engine.v0, c, elem_array, elem_count);
 #endif

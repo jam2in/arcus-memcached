@@ -373,7 +373,7 @@ Demo_set_elem_release(ENGINE_HANDLE* handle, const void *cookie,
 
 static void
 Demo_set_elem_block_release(ENGINE_HANDLE* handle, const void *cookie,
-                              eitem *eitem_list, const int eitem_count)
+                              block_result_t *blkret)
 {
     return;
 }
@@ -417,7 +417,11 @@ static ENGINE_ERROR_CODE
 Demo_set_elem_get(ENGINE_HANDLE* handle, const void* cookie,
                      const void* key, const int nkey, const uint32_t count,
                      const bool delete, const bool drop_if_empty,
+#ifdef USE_BLOCK_ALLOCATOR
+                     block_result_t *blkret,
+#else
                      eitem** eitem, uint32_t* eitem_count,
+#endif
                      uint32_t* flags, bool* dropped, uint16_t vbucket)
 {
     return ENGINE_ENOTSUP;

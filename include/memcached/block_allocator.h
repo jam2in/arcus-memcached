@@ -28,6 +28,13 @@ typedef struct _mem_block_t {
   struct _mem_block_t *next;
 } mem_block_t;
 
+typedef struct _block_result_t {
+  struct _mem_block_t *root_blk; /* block at the start point */
+  struct _mem_block_t *curr_blk; /* current access block */
+  uint32_t totelem;              /* total number of elements in the block */
+  uint32_t readelem;             /* current access elements number */
+} block_result_t;
+
 /* block allocator API */
 int block_allocator_init(size_t);
 void block_allocator_destroy(void);

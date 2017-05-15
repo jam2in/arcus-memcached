@@ -534,10 +534,10 @@ default_set_elem_release(ENGINE_HANDLE* handle, const void *cookie,
 
 static void
 default_set_elem_block_release(ENGINE_HANDLE* handle, const void *cookie,
-                               eitem *eitem_list, const int eitem_count)
+                               block_result_t *blkret)
 {
     struct default_engine *engine = get_handle(handle);
-    set_elem_block_release(engine, eitem_list, eitem_count);
+    set_elem_block_release(engine, blkret);
 }
 #else
 static void
@@ -601,7 +601,11 @@ static ENGINE_ERROR_CODE
 default_set_elem_get(ENGINE_HANDLE* handle, const void* cookie,
                      const void* key, const int nkey, const uint32_t count,
                      const bool delete, const bool drop_if_empty,
+#ifdef USE_BLOCK_ALLOCATOR
+                     block_result_t *blkret,
+#else
                      eitem** eitem, uint32_t* eitem_count,
+#endif
                      uint32_t* flags, bool* dropped, uint16_t vbucket)
 {
     struct default_engine *engine = get_handle(handle);
@@ -611,7 +615,7 @@ default_set_elem_get(ENGINE_HANDLE* handle, const void* cookie,
     if (delete) ACTION_BEFORE_WRITE(cookie, key, nkey);
     ret = set_elem_get(engine, key, nkey, count, delete, drop_if_empty,
 #ifdef USE_BLOCK_ALLOCATOR
-                       eitem, eitem_count, flags, dropped);
+                       blkret, flags, dropped);
 #else
                        (set_elem_item**)eitem, eitem_count, flags, dropped);
 #endif
@@ -1282,9 +1286,9 @@ default_dump(ENGINE_HANDLE* handle, const void* cookie,
  */
 static eitem *
 default_get_block_elem(ENGINE_HANDLE* handle, const void* cookie,
-                       mem_block_t **blk, uint32_t elem_num)
+                       block_result_t *blkret)
 {
-    return item_get_block_elem(blk, elem_num);
+    return item_get_block_elem(blkret);
 }
 #endif
 
