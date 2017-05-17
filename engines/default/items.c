@@ -1631,26 +1631,67 @@ static uint32_t do_list_elem_delete(struct default_engine *engine,
     return fcnt;
 }
 
+#ifdef USE_BLOCK_ALLOCATOR
+static ENGINE_ERROR_CODE do_list_elem_get(struct default_engine *engine,
+#else
 static uint32_t do_list_elem_get(struct default_engine *engine,
+#endif
                                  list_meta_info *info,
                                  const int index, const uint32_t count,
                                  const bool forward, const bool delete,
+#ifdef USE_BLOCK_ALLOCATOR
+                                 eitem **elem_list, uint32_t *elem_count)
+#else
                                  list_elem_item **elem_array)
+#endif
 {
     uint32_t fcnt = 0; /* found count */
     list_elem_item *tobe;
     list_elem_item *elem;
 
     elem = do_list_elem_find(info, index);
+#ifdef USE_BLOCK_ALLOCATOR
+    mem_block_t *blk = NULL;
     while (elem != NULL) {
+        if (fcnt % EITEMS_PER_BLOCK == 0) {
+            if (fcnt == 0) {    /* the first block */
+                blk = (mem_block_t *)allocate_single_block();
+                if (blk == NULL) {
+                    *elem_count = fcnt;
+                    return ENGINE_ENOMEM;
+                }
+                *elem_list = blk;
+            } else {
+                blk->next = (mem_block_t *)allocate_single_block();
+                if (blk->next == NULL) {
+                    *elem_count = fcnt;
+                    return ENGINE_ENOMEM;
+                }
+                blk = blk->next;
+            }
+        }
+        blk->items[fcnt % EITEMS_PER_BLOCK] = (eitem *)elem;
+        fcnt++;
+#else
+    while (elem != NULL) {
+        elem_array[fcnt++] = elem;
+#endif
         tobe = (forward ? elem->next : elem->prev);
         elem->refcount++;
-        elem_array[fcnt++] = elem;
         if (delete) do_list_elem_unlink(engine, info, elem, ELEM_DELETE_NORMAL);
         if (count > 0 && fcnt >= count) break;
         elem = tobe;
     }
+#ifdef USE_BLOCK_ALLOCATOR
+    *elem_count = fcnt;
+    if (fcnt > 0) {
+        return ENGINE_SUCCESS;
+    } else {
+        return ENGINE_ELEM_ENOENT;
+    }
+#else
     return fcnt;
+#endif
 }
 
 static ENGINE_ERROR_CODE do_list_elem_insert(struct default_engine *engine,
@@ -2158,19 +2199,35 @@ static uint32_t do_set_elem_traverse_fast(struct default_engine *engine, set_met
 static int do_set_elem_traverse_dfs(struct default_engine *engine,
                                     set_meta_info *info, set_hash_node *node,
                                     const uint32_t count, const bool delete,
+#ifdef USE_BLOCK_ALLOCATOR
+                                    block_result_t *blkret, int *tot_cnt)
+#else
                                     set_elem_item **elem_array)
+#endif
 {
     int hidx;
     int rcnt = 0; /* request count */
     int fcnt = 0; /* found count */
+#ifdef USE_BLOCK_ALLOCATOR
+    int i;
+    mem_block_t *blk = NULL;
+    if (blkret != NULL && blkret->root_blk != NULL)
+        blk = blkret->root_blk;
+#endif
 
     if (node->tot_hash_cnt > 0) {
         for (hidx = 0; hidx < SET_HASHTAB_SIZE; hidx++) {
             if (node->hcnt[hidx] == -1) {
                 set_hash_node *child_node = (set_hash_node *)node->htab[hidx];
                 if (count > 0) rcnt = count - fcnt;
+#ifdef USE_BLOCK_ALLOCATOR
+                fcnt += do_set_elem_traverse_dfs(engine, info, child_node, rcnt, delete,
+                                            (blkret==NULL ? NULL : blkret), tot_cnt);
+                if (blkret != NULL && *tot_cnt == -1) return fcnt; /* *tot_cnt == -1 mean ENGINE_ENOMEM */
+#else
                 fcnt += do_set_elem_traverse_dfs(engine, info, child_node, rcnt, delete,
                                             (elem_array==NULL ? NULL : &elem_array[fcnt]));
+#endif
                 if (delete) {
                     if  (child_node->tot_hash_cnt == 0 &&
                          child_node->tot_elem_cnt < (SET_MAX_HASHCHAIN_SIZE/2)) {
@@ -2184,10 +2241,36 @@ static int do_set_elem_traverse_dfs(struct default_engine *engine,
     }
     assert(count == 0 || fcnt < count);
 
+#ifdef USE_BLOCK_ALLOCATOR
+    if (blkret != NULL) {
+        for (i = 0; i < (*tot_cnt / EITEMS_PER_BLOCK) - (*tot_cnt % EITEMS_PER_BLOCK == 0 ? 1 : 0); i++)
+            blk = blk->next; /* setting starting block */
+    }
+#endif
     for (hidx = 0; hidx < SET_HASHTAB_SIZE; hidx++) {
         if (node->hcnt[hidx] > 0) {
             set_elem_item *elem = node->htab[hidx];
             while (elem != NULL) {
+#ifdef USE_BLOCK_ALLOCATOR
+                if (blkret != NULL) { /* this process is only used for sop_get process. not sop_delete */
+                    if ((*tot_cnt % EITEMS_PER_BLOCK == 0) && (*tot_cnt != 0)) {
+                        blk->next = (mem_block_t *)allocate_single_block();
+                        if (blk->next == NULL) {
+                            *tot_cnt = -1; /* mean ENGINE_ENOMEM */
+                            return fcnt;
+                        }
+                        blk = blk->next;
+                    }
+                    elem->refcount++;
+                    blk->items[*tot_cnt % EITEMS_PER_BLOCK] = (eitem *)elem;
+                    (*tot_cnt)++;
+                }
+
+                fcnt++;
+                if (delete) do_set_elem_unlink(engine, info, node, hidx, NULL, elem,
+                                               (blkret==NULL ? ELEM_DELETE_COLL
+                                                                 : ELEM_DELETE_NORMAL));
+#else
                 if (elem_array) {
                     elem->refcount++;
                     elem_array[fcnt] = elem;
@@ -2196,6 +2279,7 @@ static int do_set_elem_traverse_dfs(struct default_engine *engine,
                 if (delete) do_set_elem_unlink(engine, info, node, hidx, NULL, elem,
                                                (elem_array==NULL ? ELEM_DELETE_COLL
                                                                  : ELEM_DELETE_NORMAL));
+#endif
                 if (count > 0 && fcnt >= count) break;
                 elem = (delete ? node->htab[hidx] : elem->next);
             }
@@ -2232,7 +2316,11 @@ static uint32_t do_set_elem_delete(struct default_engine *engine,
     assert(cause == ELEM_DELETE_COLL);
     uint32_t fcnt = 0;
     if (info->root != NULL) {
+#ifdef USE_BLOCK_ALLOCATOR
+        fcnt = do_set_elem_traverse_dfs(engine, info, info->root, count, true, NULL, NULL);
+#else
         fcnt = do_set_elem_traverse_dfs(engine, info, info->root, count, true, NULL);
+#endif
         if (info->root->tot_hash_cnt == 0 && info->root->tot_elem_cnt == 0) {
             do_set_node_unlink(engine, info, NULL, 0);
         }
@@ -2241,18 +2329,51 @@ static uint32_t do_set_elem_delete(struct default_engine *engine,
 }
 #endif
 
+#ifdef USE_BLOCK_ALLOCATOR
+static ENGINE_ERROR_CODE do_set_elem_get(struct default_engine *engine,
+#else
 static uint32_t do_set_elem_get(struct default_engine *engine,
+#endif
                                 set_meta_info *info, const uint32_t count, const bool delete,
+#ifdef USE_BLOCK_ALLOCATOR
+                                block_result_t *blkret)
+#else
                                 set_elem_item **elem_array)
+#endif
 {
     uint32_t fcnt = 0;
     if (info->root != NULL) {
+#ifdef USE_BLOCK_ALLOCATOR
+        int tot_cnt = 0;
+        mem_block_t *blk = (mem_block_t*)allocate_single_block();
+        if (blk == NULL){
+            blkret->totelem = 0;
+            return ENGINE_ENOMEM;
+        }
+        blkret->root_blk = blk;
+
+        fcnt = do_set_elem_traverse_dfs(engine, info, info->root, count, delete, blkret, &tot_cnt);
+        if (tot_cnt == -1) {
+            blkret->totelem = fcnt;
+            return ENGINE_ENOMEM;
+        }
+#else
         fcnt = do_set_elem_traverse_dfs(engine, info, info->root, count, delete, elem_array);
+#endif
         if (delete && info->root->tot_hash_cnt == 0 && info->root->tot_elem_cnt == 0) {
             do_set_node_unlink(engine, info, NULL, 0);
         }
     }
+#ifdef USE_BLOCK_ALLOCATOR
+    blkret->totelem = fcnt;
+    if (fcnt > 0) {
+        return ENGINE_SUCCESS;
+    } else {
+        return ENGINE_ELEM_ENOENT;
+    }
+#else
     return fcnt;
+#endif
 }
 
 static ENGINE_ERROR_CODE do_set_elem_insert(struct default_engine *engine,
@@ -4374,15 +4495,39 @@ static bool do_btree_overlapped_with_trimmed_space(btree_meta_info *info,
     return overlapped;
 }
 
+#ifdef USE_BLOCK_ALLOCATOR
+static ENGINE_ERROR_CODE do_btree_elem_get(struct default_engine *engine, btree_meta_info *info,
+#else
 static uint32_t do_btree_elem_get(struct default_engine *engine, btree_meta_info *info,
+#endif
                                   const int bkrtype, const bkey_range *bkrange, const eflag_filter *efilter,
                                   const uint32_t offset, const uint32_t count, const bool delete,
+#ifdef USE_BLOCK_ALLOCATOR
+                                  eitem **elem_list, uint32_t *elem_count,
+                                  uint32_t srt_count, uint32_t *access_count, bool *potentialbkeytrim)
+#else
                                   btree_elem_item **elem_array,
                                   uint32_t *access_count, bool *potentialbkeytrim)
+#endif
 {
+#ifdef USE_BLOCK_ALLOCATOR
+    assert(srt_count >= 0);
+#endif
     btree_elem_posi  path[BTREE_MAX_DEPTH];
     btree_elem_item *elem;
+#ifdef USE_BLOCK_ALLOCATOR
+    mem_block_t *blk = NULL;
+    uint32_t tot_found = srt_count;
+    if (tot_found != 0) { /* smget, mget setting starting block*/
+        int i;
+        blk = *elem_list;
+        for (i = 0; i < (tot_found / EITEMS_PER_BLOCK) - (tot_found % EITEMS_PER_BLOCK == 0 ? 1 : 0); i++) {
+            blk = blk->next; /* setting starting block */
+        }
+    }
+#else
     uint32_t tot_found = 0; /* total found count */
+#endif
     uint32_t tot_access = 0; /* total access count */
 
     *potentialbkeytrim = false;
@@ -4390,7 +4535,12 @@ static uint32_t do_btree_elem_get(struct default_engine *engine, btree_meta_info
     if (info->root == NULL) {
         if (access_count)
             *access_count = 0;
+#ifdef USE_BLOCK_ALLOCATOR
+        *elem_count = tot_found-srt_count;
+        return ENGINE_SUCCESS;
+#else
         return 0;
+#endif
     }
 
     assert(info->root->ndepth < BTREE_MAX_DEPTH);
@@ -4402,7 +4552,28 @@ static uint32_t do_btree_elem_get(struct default_engine *engine, btree_meta_info
             if (offset == 0) {
                 if (efilter == NULL || do_btree_elem_filter(elem, efilter)) {
                     elem->refcount++;
+#ifdef USE_BLOCK_ALLOCATOR
+                    if (tot_found % EITEMS_PER_BLOCK == 0) {
+                        if (tot_found == 0) {
+                            blk = (mem_block_t *)allocate_single_block();
+                            if (blk == NULL) {
+                                *elem_count = tot_found-srt_count;
+                                return ENGINE_ENOMEM;
+                            }
+                            *elem_list = blk;
+                        } else {
+                            blk->next = (mem_block_t *)allocate_single_block();
+                            if (blk->next == NULL) {
+                                *elem_count = tot_found-srt_count;
+                                return ENGINE_ENOMEM;
+                            }
+                            blk = blk->next;
+                        }
+                    }
+                    blk->items[tot_found++ % EITEMS_PER_BLOCK] = (eitem *)elem;
+#else
                     elem_array[tot_found++] = elem;
+#endif
                     if (delete) {
                         do_btree_elem_unlink(engine, info, path, ELEM_DELETE_NORMAL);
                     }
@@ -4442,15 +4613,41 @@ static uint32_t do_btree_elem_get(struct default_engine *engine, btree_meta_info
                     if (skip_cnt < offset) {
                         skip_cnt++;
                     } else {
+#ifdef USE_BLOCK_ALLOCATOR
+                        if ((tot_found+cur_found) % EITEMS_PER_BLOCK == 0) {
+                            if (tot_found+cur_found == 0) { /* the first block */
+                                blk = (mem_block_t *)allocate_single_block();
+                                if (blk == NULL) {
+                                    *elem_count = tot_found+cur_found-srt_count;
+                                    return ENGINE_ENOMEM;
+                                }
+                                *elem_list = blk;
+                            } else {
+                                blk->next = (mem_block_t *)allocate_single_block();
+                                if (blk->next == NULL) {
+                                    *elem_count = tot_found+cur_found-srt_count;
+                                    return ENGINE_ENOMEM;
+                                }
+                                blk = blk->next;
+                            }
+                        }
+                        elem->refcount++;
+                        blk->items[(tot_found+cur_found) % EITEMS_PER_BLOCK] = (eitem *)elem;
+#else
                         elem->refcount++;
                         elem_array[tot_found+cur_found] = elem;
+#endif
                         if (delete) {
                             stotal += slabs_space_size(engine, do_btree_elem_ntotal(elem));
                             elem->status = BTREE_ITEM_STATUS_UNLINK;
                             c_posi.node->item[c_posi.indx] = NULL;
                         }
                         cur_found++;
+#ifdef USE_BLOCK_ALLOCATOR
+                        if (count > 0 && (tot_found-srt_count+cur_found) >= count) break;
+#else
                         if (count > 0 && (tot_found+cur_found) >= count) break;
+#endif
                     }
                 }
 
@@ -4519,9 +4716,20 @@ static uint32_t do_btree_elem_get(struct default_engine *engine, btree_meta_info
             }
         }
     }
+
     if (access_count)
         *access_count = tot_access;
+#ifdef USE_BLOCK_ALLOCATOR
+    *elem_count = tot_found-srt_count;
+    if (tot_found-srt_count == 0 && *elem_list == NULL) { /* find no element */
+        /* ENGINE_SUCCESS && elem_list != NULL */
+        if ((*elem_list = (void *)allocate_single_block()) == NULL )
+            return ENGINE_ENOMEM;
+    }
+    return ENGINE_SUCCESS;
+#else
     return tot_found;
+#endif
 }
 
 static uint32_t do_btree_elem_count(struct default_engine *engine, btree_meta_info *info,
@@ -4741,33 +4949,86 @@ static int do_btree_posi_find(btree_meta_info *info,
 
 static int do_btree_elem_batch_get(btree_elem_posi posi, const int count,
                                    const bool forward, const bool reverse,
+#ifdef USE_BLOCK_ALLOCATOR
+                                   eitem **elem_list, int srt_num)
+#else
                                    btree_elem_item **elem_array)
+#endif
 {
     btree_elem_item *elem;
     int nfound = 0;
+#ifdef USE_BLOCK_ALLOCATOR
+    mem_block_t *blk = *elem_list;
+    int i, idx;
+    /* setting starting block */
+                   /* srt_num+count-nfound-1 : elem index */
+    if (reverse) { /* (elem_index) -1, -1 mean perform the operation in the "setting block" below */
+        for (i = 0; i < (((srt_num + count - 0 - 1) - 1) / EITEMS_PER_BLOCK); i++) {
+            blk = blk->next;
+        }
+    } else {       /* (elem_index) -1, -1 mean perform the operation in the "setting block" below */
+        for (i = 0; i < ((srt_num - 1) / EITEMS_PER_BLOCK); i++) {
+            blk = blk->next;
+        }
+    }
+#endif
     while (nfound < count) {
+#ifdef USE_BLOCK_ALLOCATOR
+        idx = srt_num + count - nfound - 1;
+#endif
         if (forward) do_btree_incr_posi(&posi);
         else         do_btree_decr_posi(&posi);
         if (posi.node == NULL) break;
 
         elem = BTREE_GET_ELEM_ITEM(posi.node, posi.indx);
         elem->refcount++;
+#ifdef USE_BLOCK_ALLOCATOR
+        if (reverse) {
+            /* setting block */
+            if ((idx % EITEMS_PER_BLOCK) == (EITEMS_PER_BLOCK - 1)) {
+                blk = *elem_list;
+                for (i = 0; i < idx / EITEMS_PER_BLOCK; i++) {
+                    blk = blk->next;
+                }
+            }
+            blk->items[idx % EITEMS_PER_BLOCK] = (eitem *)elem;
+        } else {
+            /* setting block */
+            if ((nfound+srt_num) % EITEMS_PER_BLOCK == 0 && nfound != 0) {
+                blk = blk->next;
+            }
+            blk->items[(nfound+srt_num) % EITEMS_PER_BLOCK] = (eitem *)elem;
+        }
+#else
         if (reverse) elem_array[count-nfound-1] = elem;
         else         elem_array[nfound] = elem;
+#endif
         nfound += 1;
     }
     return nfound;
 }
 
+#ifdef USE_BLOCK_ALLOCATOR
+static ENGINE_ERROR_CODE do_btree_posi_find_with_get(btree_meta_info *info,
+#else
 static int do_btree_posi_find_with_get(btree_meta_info *info,
+#endif
                                        const int bkrtype, const bkey_range *bkrange,
                                        ENGINE_BTREE_ORDER order, const int count,
+#ifdef USE_BLOCK_ALLOCATOR
+                                       eitem **elem_list, int *position,
+#else
                                        btree_elem_item **elem_array,
+#endif
                                        uint32_t *elem_count, uint32_t *elem_index)
 {
     btree_elem_posi  path[BTREE_MAX_DEPTH];
     btree_elem_item *elem;
     int bpos, ecnt, eidx;
+#ifdef USE_BLOCK_ALLOCATOR
+    int i = 0;
+    mem_block_t *blk = NULL;
+#endif
 
     if (info->root == NULL) return -1; /* not found */
 
@@ -4780,6 +5041,44 @@ static int do_btree_posi_find_with_get(btree_meta_info *info,
         ecnt = 1;                             /* elem count */
         eidx = (bpos < count) ? bpos : count; /* elem index in elem array */
         elem->refcount++;
+#ifdef USE_BLOCK_ALLOCATOR
+        /* pre block allocate */
+        for (i = 0; i <= ((eidx + count) / EITEMS_PER_BLOCK); i++){
+            if (i == 0) { /* first block */
+                blk = (mem_block_t *)allocate_single_block();
+                if (blk == NULL) {
+                    *elem_count = 0;
+                    *position = -1;
+                    return ENGINE_ENOMEM;
+                }
+                *elem_list = blk;
+            } else {
+                blk->next = (mem_block_t *)allocate_single_block();
+                if (blk->next == NULL) {
+                    *position = -1;
+                    *elem_count = 0;
+                    return ENGINE_ENOMEM;
+                }
+                blk = blk->next;
+            }
+        }
+
+        blk = *elem_list;
+        for (i = 0; i < eidx / EITEMS_PER_BLOCK; i++) {
+            blk = blk->next;
+        }
+        blk->items[eidx % EITEMS_PER_BLOCK] = (eitem *)elem;
+
+        if (order == BTREE_ORDER_ASC) {
+            ecnt += do_btree_elem_batch_get(path[0], eidx,  false, true, elem_list, 0);
+            assert((ecnt-1) == eidx);
+            ecnt += do_btree_elem_batch_get(path[0], count, true,  false, elem_list, eidx+1);
+        } else {
+            ecnt += do_btree_elem_batch_get(path[0], eidx,  true,  true, elem_list, 0);
+            assert((ecnt-1) == eidx);
+            ecnt += do_btree_elem_batch_get(path[0], count, false, false, elem_list, eidx+1);
+        }
+#else
         elem_array[eidx] = elem;
 
         if (order == BTREE_ORDER_ASC) {
@@ -4791,23 +5090,58 @@ static int do_btree_posi_find_with_get(btree_meta_info *info,
             assert((ecnt-1) == eidx);
             ecnt += do_btree_elem_batch_get(path[0], count, false, false, &elem_array[eidx+1]);
         }
+#endif
         *elem_count = (uint32_t)ecnt;
         *elem_index = (uint32_t)eidx;
     } else {
         bpos = -1; /* not found */
     }
+#ifdef USE_BLOCK_ALLOCATOR
+    *position = bpos;
+    return ENGINE_SUCCESS;
+#else
     return bpos; /* btree_position */
+#endif
 }
 
+#ifdef USE_BLOCK_ALLOCATOR
+static ENGINE_ERROR_CODE do_btree_elem_get_by_posi(btree_meta_info *info,
+#else
 static uint32_t do_btree_elem_get_by_posi(btree_meta_info *info,
+#endif
                                           const int index, const uint32_t count, const bool forward,
+#ifdef USE_BLOCK_ALLOCATOR
+                                          eitem **elem_list, uint32_t *elem_count)
+#else
                                           btree_elem_item **elem_array)
+#endif
 {
     btree_elem_posi  posi;
     btree_indx_node *node;
     btree_elem_item *elem;
     int i, tot_ecnt;
     uint32_t nfound; /* found count */
+#ifdef USE_BLOCK_ALLOCATOR
+    mem_block_t *blk = NULL;
+    /* pre block allocate */
+    for (i = 0; i <= count / EITEMS_PER_BLOCK; i++) {
+        if (i == 0) { /* first block */
+            blk = (mem_block_t *)allocate_single_block();
+            if (blk == NULL) {
+                *elem_count = 0;
+                return ENGINE_ENOMEM;
+            }
+            *elem_list = blk;
+        } else {
+            blk->next = (mem_block_t *)allocate_single_block();
+            if (blk->next == NULL) {
+                *elem_count = 0;
+                return ENGINE_ENOMEM;
+            }
+            blk = blk->next;
+        }
+    }
+#endif
 
     if (info->root == NULL) return 0;
 
@@ -4828,10 +5162,20 @@ static uint32_t do_btree_elem_get_by_posi(btree_meta_info *info,
 
     elem = BTREE_GET_ELEM_ITEM(posi.node, posi.indx);
     elem->refcount++;
+#ifdef USE_BLOCK_ALLOCATOR
+    blk = *elem_list;
+    blk->items[0] = (eitem *)elem;
+    nfound = 1;
+    nfound += do_btree_elem_batch_get(posi, count-1, forward, false, elem_list, 1);
+    *elem_count = nfound;
+    return ENGINE_SUCCESS;
+
+#else
     elem_array[0] = elem;
     nfound = 1;
     nfound += do_btree_elem_batch_get(posi, count-1, forward, false, &elem_array[nfound]);
     return nfound;
+#endif
 }
 
 #ifdef SUPPORT_BOP_SMGET
@@ -4936,7 +5280,12 @@ static bool do_btree_smget_check_trim(smget_result_t *smres)
 
 static void do_btree_smget_adjust_trim(smget_result_t *smres)
 {
+#ifdef USE_BLOCK_ALLOCATOR
+    mem_block_t  *blk            = smres->elem_list;
+    eitem       **new_trim_elems = smres->trim_elems;
+#else
     eitem       **new_trim_elems = &smres->elem_array[smres->elem_count];
+#endif
     smget_emis_t *new_trim_kinfo = &smres->miss_kinfo[smres->miss_count];
     uint32_t      new_trim_count = 0;
     btree_elem_item *tail_elem = NULL;
@@ -4951,13 +5300,21 @@ static void do_btree_smget_adjust_trim(smget_result_t *smres)
          * we might trim the trimmed keys if the bkey-before-trim is behind
          * the bkey of the last found element.
          */
+#ifdef USE_BLOCK_ALLOCATOR
+        for (i = 0; i < (smres->elem_count-1) / EITEMS_PER_BLOCK; i++) {
+            blk = blk->next; /* setting last blk */
+        }
+        tail_elem = (btree_elem_item *)blk->items[(smres->elem_count-1) % EITEMS_PER_BLOCK]; /* last element */
+#else
         tail_elem = smres->elem_array[smres->elem_count-1];
+#endif
     }
 
     for (idx = smres->trim_count-1; idx >= 0; idx--)
     {
         trim_elem = smres->trim_elems[smres->keys_arrsz-1-idx];
         trim_kidx = smres->trim_kinfo[smres->keys_arrsz-1-idx].kidx;
+
         /* check if the trim elem is valid */
         if (tail_elem != NULL) {
             res = BKEY_COMP(trim_elem->data, trim_elem->nbkey,
@@ -4967,6 +5324,7 @@ static void do_btree_smget_adjust_trim(smget_result_t *smres)
                 continue; /* invalid trim */
             }
         }
+
         /* add the valid trim info in sorted arry */
         if (new_trim_count == 0) {
             pos = 0;
@@ -5454,11 +5812,19 @@ scan_next:
 
 #ifdef SUPPORT_BOP_SMGET
 #ifdef JHPARK_OLD_SMGET_INTERFACE
+#ifdef USE_BLOCK_ALLOCATOR
+static ENGINE_ERROR_CODE do_btree_smget_elem_sort_old(btree_scan_info *btree_scan_buf,
+#else
 static int do_btree_smget_elem_sort_old(btree_scan_info *btree_scan_buf,
+#endif
                                     uint16_t *sort_sindx_buf, const int sort_sindx_cnt,
                                     const int bkrtype, const bkey_range *bkrange, const eflag_filter *efilter,
                                     const uint32_t offset, const uint32_t count,
+#ifdef USE_BLOCK_ALLOCATOR
+                                    eitem **elem_list, uint32_t *kfnd_array, uint32_t *flag_array, uint32_t *ret_elem_count,
+#else
                                     btree_elem_item **elem_array, uint32_t *kfnd_array, uint32_t *flag_array,
+#endif
                                     bool *potentialbkeytrim, bool *bkey_duplicated)
 {
     btree_meta_info *info;
@@ -5472,6 +5838,9 @@ static int do_btree_smget_elem_sort_old(btree_scan_info *btree_scan_buf,
     int elem_count = 0;
     int sort_count = sort_sindx_cnt;
     bool ascending = (bkrtype != BKEY_RANGE_TYPE_DSC ? true : false);
+#ifdef USE_BLOCK_ALLOCATOR
+    mem_block_t *blk = NULL;
+#endif
 
     while (sort_count > 0) {
         curr_idx = sort_sindx_buf[first_idx];
@@ -5481,7 +5850,28 @@ static int do_btree_smget_elem_sort_old(btree_scan_info *btree_scan_buf,
             skip_count++;
         } else { /* skip_count == offset */
             elem->refcount++;
+#ifdef USE_BLOCK_ALLOCATOR
+            if (elem_count % EITEMS_PER_BLOCK == 0) {
+                if (elem_count == 0) {
+                    blk = (mem_block_t *)allocate_single_block();
+                    if (blk == NULL) {
+                        *ret_elem_count = elem_count;
+                        return ENGINE_ENOMEM;
+                    }
+                    *elem_list = blk;
+                } else {
+                    blk->next = (mem_block_t *)allocate_single_block();
+                    if (blk->next == NULL) {
+                        *ret_elem_count = elem_count;
+                        return ENGINE_ENOMEM;
+                    }
+                    blk = blk->next;
+                }
+            }
+            blk->items[elem_count % EITEMS_PER_BLOCK] = (eitem *)elem;
+#else
             elem_array[elem_count] = elem;
+#endif
             kfnd_array[elem_count] = btree_scan_buf[curr_idx].kidx;
             flag_array[elem_count] = btree_scan_buf[curr_idx].it->flags;
             elem_count++;
@@ -5544,7 +5934,17 @@ scan_next:
         }
         sort_sindx_buf[right] = curr_idx;
     }
+#ifdef USE_BLOCK_ALLOCATOR
+    *ret_elem_count = elem_count;
+    if (elem_count == 0 && *elem_list == NULL) { /* find no element */
+        /* ENGINE_SUCCESS && elem_list != NULL */
+        if ((*elem_list = (void *)allocate_single_block()) == NULL)
+            return ENGINE_ENOMEM;
+    }
+    return ENGINE_SUCCESS;
+#else
     return elem_count;
+#endif
 }
 #endif
 
@@ -5569,6 +5969,9 @@ do_btree_smget_elem_sort(btree_scan_info *btree_scan_buf,
     int skip_count = 0;
     int sort_count = sort_sindx_cnt;
     bool ascending = (bkrtype != BKEY_RANGE_TYPE_DSC ? true : false);
+#ifdef USE_BLOCK_ALLOCATOR
+    mem_block_t *blk = NULL;
+#endif
 
     while (sort_count > 0) {
         curr_idx = sort_sindx_buf[first_idx];
@@ -5577,7 +5980,26 @@ do_btree_smget_elem_sort(btree_scan_info *btree_scan_buf,
         if (skip_count < offset) {
             skip_count++;
         } else { /* skip_count == offset */
+#ifdef USE_BLOCK_ALLOCATOR
+            if (smres->elem_count % EITEMS_PER_BLOCK == 0) {
+                if (smres->elem_count == 0) {
+                    blk = (mem_block_t *)allocate_single_block();
+                    if (blk == NULL) {
+                        return ENGINE_ENOMEM;
+                    }
+                    smres->elem_list = blk;
+                } else {
+                    blk->next = (mem_block_t *)allocate_single_block();
+                    if (blk->next == NULL) {
+                        return ENGINE_ENOMEM;
+                    }
+                    blk = blk->next;
+                }
+            }
+            blk->items[smres->elem_count % EITEMS_PER_BLOCK] = (eitem *)elem;
+#else
             smres->elem_array[smres->elem_count] = elem;
+#endif
             smres->elem_kinfo[smres->elem_count].kidx = btree_scan_buf[curr_idx].kidx;
             smres->elem_kinfo[smres->elem_count].flag = btree_scan_buf[curr_idx].it->flags;
             smres->elem_count += 1;
@@ -5668,6 +6090,13 @@ scan_next:
             do_btree_smget_adjust_trim(smres);
         }
     }
+#ifdef USE_BLOCK_ALLOCATOR
+    if (smres->elem_count == 0 && smres->elem_list == NULL) { /* find no element */
+        /* ENGINE_SUCCESS && smres->elem_list != NULL */
+        if ((smres->elem_list = (eitem *)allocate_single_block()) == NULL)
+            return ENGINE_ENOMEM;
+    }
+#endif
     return ret;
 }
 #endif
@@ -6374,6 +6803,36 @@ list_elem_item *list_elem_alloc(struct default_engine *engine,
     return elem;
 }
 
+#ifdef USE_BLOCK_ALLOCATOR
+void list_elem_release(struct default_engine *engine,
+                       list_elem_item *eitem)
+{
+    pthread_mutex_lock(&engine->cache_lock);
+    do_list_elem_release(engine, eitem);
+    pthread_mutex_unlock(&engine->cache_lock);
+}
+
+void list_elem_block_release(struct default_engine *engine,
+                             eitem *eitem_list, const int elem_count)
+{
+    int cnt = 0;
+    mem_block_t *blk = eitem_list;
+    pthread_mutex_lock(&engine->cache_lock);
+    while (cnt < elem_count) {
+        do_list_elem_release(engine, (list_elem_item *)(blk->items[cnt % EITEMS_PER_BLOCK]));
+        if (cnt % EITEMS_PER_BLOCK == EITEMS_PER_BLOCK - 1) {
+            blk = blk->next;
+        }
+        cnt++;
+        if ((cnt % 100) == 0 && cnt < elem_count) {
+            pthread_mutex_unlock(&engine->cache_lock);
+            pthread_mutex_lock(&engine->cache_lock);
+        }
+    }
+    free_block_list(eitem_list, -1);
+    pthread_mutex_unlock(&engine->cache_lock);
+}
+#else
 void list_elem_release(struct default_engine *engine,
                        list_elem_item **elem_array, const int elem_count)
 {
@@ -6388,6 +6847,7 @@ void list_elem_release(struct default_engine *engine,
     }
     pthread_mutex_unlock(&engine->cache_lock);
 }
+#endif
 
 ENGINE_ERROR_CODE list_elem_insert(struct default_engine *engine,
                                    const char *key, const size_t nkey,
@@ -6500,7 +6960,11 @@ ENGINE_ERROR_CODE list_elem_get(struct default_engine *engine,
                                 const char *key, const size_t nkey,
                                 int from_index, int to_index,
                                 const bool delete, const bool drop_if_empty,
+#ifdef USE_BLOCK_ALLOCATOR
+                                eitem **elem_list, uint32_t *elem_count,
+#else
                                 list_elem_item **elem_array, uint32_t *elem_count,
+#endif
                                 uint32_t *flags, bool *dropped)
 {
     hash_item      *it;
@@ -6522,8 +6986,13 @@ ENGINE_ERROR_CODE list_elem_get(struct default_engine *engine,
                 int  index = from_index;
                 uint32_t count = (forward ? (to_index - from_index + 1)
                                           : (from_index - to_index + 1));
+#ifdef USE_BLOCK_ALLOCATOR
+                ret = do_list_elem_get(engine, info, index, count, forward, delete, elem_list, elem_count);
+                if (ret == ENGINE_SUCCESS) {
+#else
                 *elem_count = do_list_elem_get(engine, info, index, count, forward, delete, elem_array);
                 if (*elem_count > 0) {
+#endif
                     if (info->ccnt == 0 && drop_if_empty) {
                         assert(delete == true);
                         do_item_unlink(engine, it, ITEM_UNLINK_EMPTY);
@@ -6532,9 +7001,13 @@ ENGINE_ERROR_CODE list_elem_get(struct default_engine *engine,
                         *dropped = false;
                     }
                     *flags = it->flags;
+#ifdef USE_BLOCK_ALLOCATOR
+                }
+#else
                 } else {
                     ret = ENGINE_ELEM_ENOENT; /* SERVER_ERROR internal */
                 }
+#endif
             }
         } while (0);
         do_item_release(engine, it);
@@ -6580,6 +7053,35 @@ set_elem_item *set_elem_alloc(struct default_engine *engine, const int nbytes, c
     return elem;
 }
 
+#ifdef USE_BLOCK_ALLOCATOR
+void set_elem_release(struct default_engine *engine, set_elem_item *eitem)
+{
+    pthread_mutex_lock(&engine->cache_lock);
+    do_set_elem_release(engine, eitem);
+    pthread_mutex_unlock(&engine->cache_lock);
+}
+
+void set_elem_block_release(struct default_engine *engine,
+                            block_result_t *blkret)
+{
+    int cnt = 0;
+    mem_block_t *blk = blkret->root_blk;
+    pthread_mutex_lock(&engine->cache_lock);
+    while (cnt < blkret->totelem){
+        do_set_elem_release(engine, (set_elem_item *)(blk->items[cnt % EITEMS_PER_BLOCK]));
+        if (cnt % EITEMS_PER_BLOCK == EITEMS_PER_BLOCK - 1) {
+            blk = blk->next;
+        }
+        cnt++;
+        if ((cnt % 100) == 0 && cnt < blkret->totelem) {
+            pthread_mutex_unlock(&engine->cache_lock);
+            pthread_mutex_lock(&engine->cache_lock);
+        }
+    }
+    free_block_list(blkret->root_blk, -1);
+    pthread_mutex_unlock(&engine->cache_lock);
+}
+#else
 void set_elem_release(struct default_engine *engine, set_elem_item **elem_array, const int elem_count)
 {
     int cnt = 0;
@@ -6593,6 +7095,7 @@ void set_elem_release(struct default_engine *engine, set_elem_item **elem_array,
     }
     pthread_mutex_unlock(&engine->cache_lock);
 }
+#endif
 
 ENGINE_ERROR_CODE set_elem_insert(struct default_engine *engine, const char *key, const size_t nkey,
                                   set_elem_item *elem, item_attr *attrp, bool *created, const void *cookie)
@@ -6688,7 +7191,11 @@ ENGINE_ERROR_CODE set_elem_exist(struct default_engine *engine,
 ENGINE_ERROR_CODE set_elem_get(struct default_engine *engine,
                                const char *key, const size_t nkey, const uint32_t count,
                                const bool delete, const bool drop_if_empty,
+#ifdef USE_BLOCK_ALLOCATOR
+                               block_result_t *blkret,
+#else
                                set_elem_item **elem_array, uint32_t *elem_count,
+#endif
                                uint32_t *flags, bool *dropped)
 {
     hash_item     *it;
@@ -6703,8 +7210,15 @@ ENGINE_ERROR_CODE set_elem_get(struct default_engine *engine,
             if ((info->mflags & COLL_META_FLAG_READABLE) == 0) {
                 ret = ENGINE_UNREADABLE; break;
             }
+#ifdef USE_BLOCK_ALLOCATOR
+            ret = do_set_elem_get(engine, info, count, delete, blkret);
+            if (ret == ENGINE_SUCCESS) {
+                blkret->curr_blk = blkret->root_blk;
+                blkret->readelem = 0;
+#else
             *elem_count = do_set_elem_get(engine, info, count, delete, elem_array);
             if (*elem_count > 0) {
+#endif
                 if (info->ccnt == 0 && drop_if_empty) {
                     assert(delete == true);
                     do_item_unlink(engine, it, ITEM_UNLINK_EMPTY);
@@ -6713,9 +7227,28 @@ ENGINE_ERROR_CODE set_elem_get(struct default_engine *engine,
                     *dropped = false;
                 }
                 *flags = it->flags;
+#ifdef USE_BLOCK_ALLOCATOR
+            } else if (ret == ENGINE_ENOMEM) { /* item & block release */
+                int cnt = 0;
+                mem_block_t *blk = blkret->root_blk;
+                while (cnt < blkret->totelem) {
+                    do_set_elem_release(engine, (set_elem_item *)(blk->items[cnt % EITEMS_PER_BLOCK]));
+                    if (cnt % EITEMS_PER_BLOCK == EITEMS_PER_BLOCK - 1) {
+                        blk = blk->next;
+                    }
+                    cnt++;
+                    if ((cnt % 100) == 0 && cnt < blkret->totelem) {
+                        pthread_mutex_unlock(&engine->cache_lock);
+                        pthread_mutex_lock(&engine->cache_lock);
+                    }
+                }
+                free_block_list(blkret->root_blk, -1);
+            }
+#else
             } else {
                 ret = ENGINE_ELEM_ENOENT; break;
             }
+#endif
         } while (0);
         do_item_release(engine, it);
     }
@@ -6762,8 +7295,42 @@ btree_elem_item *btree_elem_alloc(struct default_engine *engine,
     return elem;
 }
 
+#ifdef USE_BLOCK_ALLOCATOR
+void btree_elem_release(struct default_engine *engine,
+                        btree_elem_item *eitem)
+{
+    pthread_mutex_lock(&engine->cache_lock);
+    do_btree_elem_release(engine, eitem);
+    pthread_mutex_unlock(&engine->cache_lock);
+}
+
+void btree_elem_block_release(struct default_engine *engine,
+                              eitem *eitem_list, const int elem_count)
+{
+    int cnt = 0;
+    mem_block_t *blk = eitem_list;
+    pthread_mutex_lock(&engine->cache_lock);
+    while (cnt < elem_count) {
+        do_btree_elem_release(engine, (btree_elem_item *)(blk->items[cnt % EITEMS_PER_BLOCK]));
+        if (cnt % EITEMS_PER_BLOCK == EITEMS_PER_BLOCK - 1) {
+            blk = blk->next;
+        }
+        cnt ++;
+        if ((cnt % 100) == 0 && elem_count) {
+            pthread_mutex_unlock(&engine->cache_lock);
+            pthread_mutex_lock(&engine->cache_lock);
+        }
+    }
+    free_block_list(eitem_list, -1);
+    pthread_mutex_unlock(&engine->cache_lock);
+}
+
+void btree_elem_array_release(struct default_engine *engine,
+                              btree_elem_item **elem_array, const int elem_count)
+#else
 void btree_elem_release(struct default_engine *engine,
                         btree_elem_item **elem_array, const int elem_count)
+#endif
 {
     int cnt = 0;
     pthread_mutex_lock(&engine->cache_lock);
@@ -6954,7 +7521,11 @@ ENGINE_ERROR_CODE btree_elem_get(struct default_engine *engine,
                                  const bkey_range *bkrange, const eflag_filter *efilter,
                                  const uint32_t offset, const uint32_t req_count,
                                  const bool delete, const bool drop_if_empty,
+#ifdef USE_BLOCK_ALLOCATOR
+                                 eitem **elem_list, uint32_t *elem_count, uint32_t srt_count, /* use smget, mget */
+#else
                                  btree_elem_item **elem_array, uint32_t *elem_count,
+#endif
                                  uint32_t *access_count,
                                  uint32_t *flags, bool *dropped_trimmed)
 {
@@ -6979,10 +7550,17 @@ ENGINE_ERROR_CODE btree_elem_get(struct default_engine *engine,
                 (info->bktype == BKEY_TYPE_BINARY && bkrange->from_nbkey == 0)) {
                 ret = ENGINE_EBADBKEY; break;
             }
+#ifdef USE_BLOCK_ALLOCATOR
+            ret = do_btree_elem_get(engine, info, bkrtype, bkrange, efilter,
+                                    offset, req_count, delete,
+                                    elem_list, elem_count, srt_count, access_count, &potentialbkeytrim);
+            if (ret == ENGINE_SUCCESS && *elem_count > 0) {
+#else
             *elem_count = do_btree_elem_get(engine, info, bkrtype, bkrange, efilter,
                                             offset, req_count, delete,
                                             elem_array, access_count, &potentialbkeytrim);
             if (*elem_count > 0) {
+#endif
                 if (delete) {
                     if (info->ccnt == 0 && drop_if_empty) {
                         assert(info->root == NULL);
@@ -6995,6 +7573,10 @@ ENGINE_ERROR_CODE btree_elem_get(struct default_engine *engine,
                     *dropped_trimmed = potentialbkeytrim;
                 }
                 *flags = it->flags;
+#ifdef USE_BLOCK_ALLOCATOR
+            } else if (ret == ENGINE_ENOMEM) {
+                /* ret = ENGINE_ENOMEM */
+#endif
             } else {
                 if (potentialbkeytrim == true)
                     ret = ENGINE_EBKEYOOR;
@@ -7080,7 +7662,11 @@ ENGINE_ERROR_CODE btree_posi_find_with_get(struct default_engine *engine,
                                            const char *key, const size_t nkey,
                                            const bkey_range *bkrange, ENGINE_BTREE_ORDER order,
                                            const int count, int *position,
+#ifdef USE_BLOCK_ALLOCATOR
+                                           eitem **elem_list, uint32_t *elem_count,
+#else
                                            btree_elem_item **elem_array, uint32_t *elem_count,
+#endif
                                            uint32_t *elem_index, uint32_t *flags)
 {
     hash_item       *it;
@@ -7105,8 +7691,13 @@ ENGINE_ERROR_CODE btree_posi_find_with_get(struct default_engine *engine,
                 (info->bktype == BKEY_TYPE_BINARY && bkrange->from_nbkey == 0)) {
                 ret = ENGINE_EBADBKEY; break;
             }
+#ifdef USE_BLOCK_ALLOCATOR
+            ret = do_btree_posi_find_with_get(info, bkrtype, bkrange, order, count, elem_list, position, elem_count, elem_index);
+            if (ret == ENGINE_ENOMEM) break;
+#else
             *position = do_btree_posi_find_with_get(info, bkrtype, bkrange, order, count,
                                                     elem_array, elem_count, elem_index);
+#endif
             if (*position < 0) {
                 ret = ENGINE_ELEM_ENOENT; break;
             }
@@ -7121,7 +7712,11 @@ ENGINE_ERROR_CODE btree_posi_find_with_get(struct default_engine *engine,
 ENGINE_ERROR_CODE btree_elem_get_by_posi(struct default_engine *engine,
                                          const char *key, const size_t nkey,
                                          ENGINE_BTREE_ORDER order, int from_posi, int to_posi,
+#ifdef USE_BLOCK_ALLOCATOR
+                                         eitem **elem_list, uint32_t *elem_count, uint32_t *flags)
+#else
                                          btree_elem_item **elem_array, uint32_t *elem_count, uint32_t *flags)
+#endif
 {
     hash_item       *it;
     btree_meta_info *info;
@@ -7159,7 +7754,11 @@ ENGINE_ERROR_CODE btree_elem_get_by_posi(struct default_engine *engine,
                 forward = false;
                 rqcount = from_posi - to_posi + 1;
             }
+#ifdef USE_BLOCK_ALLOCATOR
+            ret = do_btree_elem_get_by_posi(info, from_posi, rqcount, forward, elem_list, elem_count);
+#else
             *elem_count = do_btree_elem_get_by_posi(info, from_posi, rqcount, forward, elem_array);
+#endif
             if (*elem_count == 0) {
                 ret = ENGINE_ELEM_ENOENT; break;
             }
@@ -7177,7 +7776,11 @@ ENGINE_ERROR_CODE btree_elem_smget_old(struct default_engine *engine,
                                    token_t *key_array, const int key_count,
                                    const bkey_range *bkrange, const eflag_filter *efilter,
                                    const uint32_t offset, const uint32_t count,
+#ifdef USE_BLOCK_ALLOCATOR
+                                   eitem **elem_list, uint32_t *kfnd_array,
+#else
                                    btree_elem_item **elem_array, uint32_t *kfnd_array,
+#endif
                                    uint32_t *flag_array, uint32_t *elem_count,
                                    uint32_t *missed_key_array, uint32_t *missed_key_count,
                                    bool *trimmed, bool *duplicated)
@@ -7205,10 +7808,17 @@ ENGINE_ERROR_CODE btree_elem_smget_old(struct default_engine *engine,
                                    missed_key_array, missed_key_count, duplicated);
     if (ret == ENGINE_SUCCESS) {
         /* the 2nd phase: get the sorted elems */
+#ifdef USE_BLOCK_ALLOCATOR
+        ret = do_btree_smget_elem_sort_old(btree_scan_buf, sort_sindx_buf, sort_sindx_cnt,
+                                       bkrtype, bkrange, efilter, offset, count,
+                                       elem_list, kfnd_array, flag_array, elem_count,
+                                       trimmed, duplicated);
+#else
         *elem_count = do_btree_smget_elem_sort_old(btree_scan_buf, sort_sindx_buf, sort_sindx_cnt,
                                                bkrtype, bkrange, efilter, offset, count,
                                                elem_array, kfnd_array, flag_array,
                                                trimmed, duplicated);
+#endif
         for (i = 0; i <= (offset+count); i++) {
             if (btree_scan_buf[i].it != NULL)
                 do_item_release(engine, btree_scan_buf[i].it);
@@ -7239,11 +7849,17 @@ ENGINE_ERROR_CODE btree_elem_smget(struct default_engine *engine,
         btree_scan_buf[i].it = NULL;
     }
 
+#ifdef USE_BLOCK_ALLOCATOR
+    /* initialize smget result structure */
+    /* trim_elems, elem_kinfo, miss_kinfo, already init in process_bop_smget_complete */
+    assert(result->elem_list == NULL);
+#else
     /* initialize smget result structure */
     assert(result->elem_array != NULL);
     result->trim_elems = (eitem *)&result->elem_array[count];
     result->elem_kinfo = (smget_ehit_t *)&result->elem_array[count + key_count];
     result->miss_kinfo = (smget_emis_t *)&result->elem_kinfo[count];
+#endif
     result->trim_kinfo = result->miss_kinfo;
     result->elem_count = 0;
     result->miss_count = 0;
@@ -7670,6 +8286,18 @@ const void* item_get_meta(const hash_item* item)
     else
         return NULL;
 }
+
+#ifdef USE_BLOCK_ALLOCATOR
+/*
+ * block allocator API
+ */
+eitem* item_get_block_elem(block_result_t *blkret)
+{
+    eitem *elem = (blkret->curr_blk)->items[blkret->readelem % EITEMS_PER_BLOCK];
+    if (blkret->readelem++ % EITEMS_PER_BLOCK == EITEMS_PER_BLOCK - 1) blkret->curr_blk = (blkret->curr_blk)->next;
+    return elem;
+}
+#endif
 
 /****
 uint8_t item_get_clsid(const hash_item* item)
@@ -8563,14 +9191,22 @@ static void do_map_elem_unlink(struct default_engine *engine,
 static bool do_map_elem_traverse_dfs_byfield(struct default_engine *engine,
                                              map_meta_info *info, map_hash_node *node, const int hval,
                                              const field_t *field, const bool delete,
+#ifdef USE_BLOCK_ALLOCATOR
+                                             eitem **elem_list)
+#else
                                              map_elem_item **elem_array)
+#endif
 {
     bool ret;
     int hidx = MAP_GET_HASHIDX(hval, node->hdepth);
 
     if (node->hcnt[hidx] == -1) {
         map_hash_node *child_node = node->htab[hidx];
+#ifdef USE_BLOCK_ALLOCATOR
+        ret = do_map_elem_traverse_dfs_byfield(engine, info, child_node, hval, field, delete, elem_list);
+#else
         ret = do_map_elem_traverse_dfs_byfield(engine, info, child_node, hval, field, delete, elem_array);
+#endif
         if (ret && delete) {
             if (child_node->tot_hash_cnt == 0 &&
                 child_node->tot_elem_cnt < (MAP_MAX_HASHCHAIN_SIZE/2)) {
@@ -8584,10 +9220,17 @@ static bool do_map_elem_traverse_dfs_byfield(struct default_engine *engine,
             map_elem_item *elem = node->htab[hidx];
             while (elem != NULL) {
                 if (map_hash_eq(hval, field->value, field->length, elem->hval, elem->data, elem->nfield)) {
+#ifdef USE_BLOCK_ALLOCATOR
+                    if (elem_list) {
+                        elem->refcount++;
+                        elem_list[0] = elem;
+                    }
+#else
                     if (elem_array) {
                         elem->refcount++;
                         elem_array[0] = elem;
                     }
+#endif
 
                     if (delete) {
                         do_map_elem_unlink(engine, info, node, hidx, prev, elem, ELEM_DELETE_NORMAL);
@@ -8606,19 +9249,35 @@ static bool do_map_elem_traverse_dfs_byfield(struct default_engine *engine,
 static int do_map_elem_traverse_dfs_bycnt(struct default_engine *engine,
                                           map_meta_info *info, map_hash_node *node,
                                           const uint32_t count, const bool delete,
+#ifdef USE_BLOCK_ALLOCATOR
+                                          eitem **elem_list, int *tot_cnt, enum elem_delete_cause cause)
+#else
                                           map_elem_item **elem_array, enum elem_delete_cause cause)
+#endif
 {
     int hidx = -1;
     int rcnt = 0; /* request count */
     int fcnt = 0; /* found count */
+#ifdef USE_BLOCK_ALLOCATOR
+    int i;
+    mem_block_t *blk = NULL;
+    if (elem_list != NULL)
+        blk = *elem_list;
+#endif
 
     if (node->tot_hash_cnt > 0) {
         for (hidx = 0; hidx < MAP_HASHTAB_SIZE; hidx++) {
             if (node->hcnt[hidx] == -1) {
                 map_hash_node *child_node = (map_hash_node *)node->htab[hidx];
                 if (count > 0) rcnt = count - fcnt;
+#ifdef USE_BLOCK_ALLOCATOR
+                fcnt += do_map_elem_traverse_dfs_bycnt(engine, info, child_node, rcnt, delete,
+                                            (elem_list==NULL ? NULL : elem_list), tot_cnt, cause);
+                if (elem_list != NULL && *tot_cnt == -1) return fcnt; /* *tot_cnt == -1 mean ENGINE_ENOMEM */
+#else
                 fcnt += do_map_elem_traverse_dfs_bycnt(engine, info, child_node, rcnt, delete,
                                             (elem_array==NULL ? NULL : &elem_array[fcnt]), cause);
+#endif
                 if (delete) {
                     if  (child_node->tot_hash_cnt == 0 &&
                          child_node->tot_elem_cnt < (MAP_MAX_HASHCHAIN_SIZE/2)) {
@@ -8632,14 +9291,36 @@ static int do_map_elem_traverse_dfs_bycnt(struct default_engine *engine,
     }
     assert(count == 0 || fcnt < count);
 
+#ifdef USE_BLOCK_ALLOCATOR
+    if (elem_list != NULL) {
+        for (i = 0; i < (*tot_cnt / EITEMS_PER_BLOCK) - (*tot_cnt % EITEMS_PER_BLOCK == 0 ? 1 : 0); i++)
+            blk = blk->next; /* setting starting block */
+    }
+#endif
     for (hidx = 0; hidx < MAP_HASHTAB_SIZE; hidx++) {
         if (node->hcnt[hidx] > 0) {
             map_elem_item *elem = node->htab[hidx];
             while (elem != NULL) {
+#ifdef USE_BLOCK_ALLOCATOR
+                if (elem_list != NULL) {
+                    if ((*tot_cnt % EITEMS_PER_BLOCK == 0) && (*tot_cnt != 0)) {
+                        blk->next = (mem_block_t *)allocate_single_block();
+                        if (blk->next == NULL) {
+                            *tot_cnt = -1; /* mean ENGINE_ENOMEM */
+                            return fcnt;
+                        }
+                        blk = blk->next;
+                    }
+                    elem->refcount++;
+                    blk->items[*tot_cnt % EITEMS_PER_BLOCK] = (eitem *)elem;
+                    (*tot_cnt)++;
+                }
+#else
                 if (elem_array) {
                     elem->refcount++;
                     elem_array[fcnt] = elem;
                 }
+#endif
                 fcnt++;
                 if (delete) do_map_elem_unlink(engine, info, node, hidx, NULL, elem, cause);
                 if (count > 0 && fcnt >= count) break;
@@ -8661,7 +9342,11 @@ static uint32_t do_map_elem_delete_with_field(struct default_engine *engine,
     uint32_t delcnt = 0;
     if (info->root != NULL) {
         if (numfields == 0) {
+#ifdef USE_BLOCK_ALLOCATOR
+            delcnt = do_map_elem_traverse_dfs_bycnt(engine, info, info->root, 0, true, NULL, NULL, cause);
+#else
             delcnt = do_map_elem_traverse_dfs_bycnt(engine, info, info->root, 0, true, NULL, cause);
+#endif
         } else {
             for (ii = 0; ii < numfields; ii++) {
                 int hval = genhash_string_hash(flist[ii].value, flist[ii].length);
@@ -8747,7 +9432,11 @@ static uint32_t do_map_elem_delete(struct default_engine *engine,
     assert(cause == ELEM_DELETE_COLL);
     uint32_t fcnt = 0;
     if (info->root != NULL) {
+#ifdef USE_BLOCK_ALLOCATOR
+        fcnt = do_map_elem_traverse_dfs_bycnt(engine, info, info->root, count, true, NULL, NULL, cause);
+#else
         fcnt = do_map_elem_traverse_dfs_bycnt(engine, info, info->root, count, true, NULL, cause);
+#endif
         if (info->root->tot_hash_cnt == 0 && info->root->tot_elem_cnt == 0) {
             do_map_node_unlink(engine, info, NULL, 0);
         }
@@ -8755,21 +9444,59 @@ static uint32_t do_map_elem_delete(struct default_engine *engine,
     return fcnt;
 }
 
+#ifdef USE_BLOCK_ALLOCATOR
+static ENGINE_ERROR_CODE do_map_elem_get(struct default_engine *engine,
+#else
 static uint32_t do_map_elem_get(struct default_engine *engine,
+#endif
                                 map_meta_info *info, const int numfields, const field_t *flist,
+#ifdef USE_BLOCK_ALLOCATOR
+                                const bool delete, eitem **elem_list, uint32_t *elem_count)
+#else
                                 const bool delete, map_elem_item **elem_array)
+#endif
 {
     int ii;
     uint32_t array_cnt = 0;
 
     if (info->root != NULL) {
+#ifdef USE_BLOCK_ALLOCATOR
+        int tot_cnt = 0;
+        mem_block_t *blk = (mem_block_t *)allocate_single_block();
+        if (blk == NULL) {
+            *elem_count = 0;
+            return ENGINE_ENOMEM;
+        }
+        *elem_list = blk;
+#endif
         if (numfields == 0) {
+#ifdef USE_BLOCK_ALLOCATOR
+            array_cnt = do_map_elem_traverse_dfs_bycnt(engine, info, info->root, 0, delete, elem_list, &tot_cnt, ELEM_DELETE_NORMAL);
+            if (tot_cnt == -1) {
+                *elem_count = array_cnt;
+                return ENGINE_ENOMEM;
+            }
+#else
             array_cnt = do_map_elem_traverse_dfs_bycnt(engine, info, info->root, 0, delete, elem_array, ELEM_DELETE_NORMAL);
+#endif
         } else {
             for (ii = 0; ii < numfields; ii++) {
                 int hval = genhash_string_hash(flist[ii].value, flist[ii].length);
+#ifdef USE_BLOCK_ALLOCATOR
+                if (array_cnt % EITEMS_PER_BLOCK == 0 && array_cnt != 0) {
+                    blk->next = (mem_block_t *)allocate_single_block();
+                    if (blk->next == NULL) {
+                        *elem_count = array_cnt;
+                        return ENGINE_ENOMEM;
+                    }
+                    blk = blk->next;
+                }
+                if (do_map_elem_traverse_dfs_byfield(engine, info, info->root, hval, &flist[ii],
+                                                     delete, &blk->items[array_cnt % EITEMS_PER_BLOCK])) {
+#else
                 if (do_map_elem_traverse_dfs_byfield(engine, info, info->root, hval, &flist[ii],
                                                      delete, &elem_array[array_cnt])) {
+#endif
                     array_cnt++;
                 }
             }
@@ -8778,7 +9505,16 @@ static uint32_t do_map_elem_get(struct default_engine *engine,
             do_map_node_unlink(engine, info, NULL, 0);
         }
     }
+#ifdef USE_BLOCK_ALLOCATOR
+    *elem_count = array_cnt;
+    if (array_cnt > 0) {
+        return ENGINE_SUCCESS;
+    } else {
+        return ENGINE_ELEM_ENOENT;
+    }
+#else
     return array_cnt;
+#endif
 }
 
 static ENGINE_ERROR_CODE do_map_elem_insert(struct default_engine *engine,
@@ -8871,6 +9607,34 @@ map_elem_item *map_elem_alloc(struct default_engine *engine, const int nfield, c
     return elem;
 }
 
+#ifdef USE_BLOCK_ALLOCATOR
+void map_elem_release(struct default_engine *engine, map_elem_item *eitem)
+{
+    pthread_mutex_lock(&engine->cache_lock);
+    do_map_elem_release(engine, eitem);
+    pthread_mutex_unlock(&engine->cache_lock);
+}
+
+void map_elem_block_release(struct default_engine *engine, eitem *eitem_list, const int elem_count)
+{
+    int cnt = 0;
+    mem_block_t *blk = eitem_list;
+    pthread_mutex_lock(&engine->cache_lock);
+    while (cnt < elem_count) {
+        do_map_elem_release(engine, (map_elem_item *)(blk->items[cnt % EITEMS_PER_BLOCK]));
+        if (cnt % EITEMS_PER_BLOCK == EITEMS_PER_BLOCK - 1) {
+            blk = blk->next;
+        }
+        cnt++;
+        if ((cnt % 100) == 0 && cnt < elem_count) {
+            pthread_mutex_unlock(&engine->cache_lock);
+            pthread_mutex_lock(&engine->cache_lock);
+        }
+    }
+    free_block_list(eitem_list, -1);
+    pthread_mutex_unlock(&engine->cache_lock);
+}
+#else
 void map_elem_release(struct default_engine *engine, map_elem_item **elem_array, const int elem_count)
 {
     int cnt = 0;
@@ -8884,6 +9648,7 @@ void map_elem_release(struct default_engine *engine, map_elem_item **elem_array,
     }
     pthread_mutex_unlock(&engine->cache_lock);
 }
+#endif
 
 ENGINE_ERROR_CODE map_elem_insert(struct default_engine *engine, const char *key, const size_t nkey,
                                   map_elem_item *elem, item_attr *attrp, bool *created, const void *cookie)
@@ -8969,7 +9734,11 @@ ENGINE_ERROR_CODE map_elem_delete(struct default_engine *engine, const char *key
 
 ENGINE_ERROR_CODE map_elem_get(struct default_engine *engine, const char *key, const size_t nkey,
                                const int numfields, const field_t *flist, const bool delete,
+#ifdef USE_BLOCK_ALLOCATOR
+                               const bool drop_if_empty, eitem **elem_list, uint32_t *elem_count,
+#else
                                const bool drop_if_empty, map_elem_item **elem_array, uint32_t *elem_count,
+#endif
                                uint32_t *flags, bool *dropped)
 {
     hash_item     *it;
@@ -8984,8 +9753,13 @@ ENGINE_ERROR_CODE map_elem_get(struct default_engine *engine, const char *key, c
             if ((info->mflags & COLL_META_FLAG_READABLE) == 0) {
                 ret = ENGINE_UNREADABLE; break;
             }
+#ifdef USE_BLOCK_ALLOCATOR
+            ret = do_map_elem_get(engine, info, numfields, flist, delete, elem_list, elem_count);
+            if (ret == ENGINE_SUCCESS) {
+#else
             *elem_count = do_map_elem_get(engine, info, numfields, flist, delete, elem_array);
             if (*elem_count > 0) {
+#endif
                 if (info->ccnt == 0 && drop_if_empty) {
                     assert(delete == true);
                     do_item_unlink(engine, it, ITEM_UNLINK_EMPTY);
@@ -8994,9 +9768,13 @@ ENGINE_ERROR_CODE map_elem_get(struct default_engine *engine, const char *key, c
                     *dropped = false;
                 }
                 *flags = it->flags;
+#ifdef USE_BLOCK_ALLOCATOR
+            }
+#else
             } else {
                 ret = ENGINE_ELEM_ENOENT;
             }
+#endif
         } while (0);
         do_item_release(engine, it);
     }

@@ -291,12 +291,28 @@ Demo_list_elem_alloc(ENGINE_HANDLE* handle, const void* cookie,
     return ENGINE_ENOTSUP;
 }
 
+#ifdef USE_BLOCK_ALLOCATOR
+static void
+Demo_list_elem_release(ENGINE_HANDLE* handle, const void *cookie,
+                          eitem *eitem)
+{
+    return;
+}
+
+static void
+Demo_list_elem_block_release(ENGINE_HANDLE* handle, const void *cookie,
+                             eitem *eitem_list, const int eitem_count)
+{
+    return;
+}
+#else
 static void
 Demo_list_elem_release(ENGINE_HANDLE* handle, const void *cookie,
                           eitem **eitem_array, const int eitem_count)
 {
     return;
 }
+#endif
 
 static ENGINE_ERROR_CODE
 Demo_list_elem_insert(ENGINE_HANDLE* handle, const void* cookie,
@@ -347,12 +363,28 @@ Demo_set_elem_alloc(ENGINE_HANDLE* handle, const void* cookie,
     return ENGINE_ENOTSUP;
 }
 
+#ifdef USE_BLOCK_ALLOCATOR
+static void
+Demo_set_elem_release(ENGINE_HANDLE* handle, const void *cookie,
+                        eitem *eitem)
+{
+    return;
+}
+
+static void
+Demo_set_elem_block_release(ENGINE_HANDLE* handle, const void *cookie,
+                              block_result_t *blkret)
+{
+    return;
+}
+#else
 static void
 Demo_set_elem_release(ENGINE_HANDLE* handle, const void *cookie,
                          eitem **eitem_array, const int eitem_count)
 {
     return;
 }
+#endif
 
 static ENGINE_ERROR_CODE
 Demo_set_elem_insert(ENGINE_HANDLE* handle, const void* cookie,
@@ -385,7 +417,11 @@ static ENGINE_ERROR_CODE
 Demo_set_elem_get(ENGINE_HANDLE* handle, const void* cookie,
                      const void* key, const int nkey, const uint32_t count,
                      const bool delete, const bool drop_if_empty,
+#ifdef USE_BLOCK_ALLOCATOR
+                     block_result_t *blkret,
+#else
                      eitem** eitem, uint32_t* eitem_count,
+#endif
                      uint32_t* flags, bool* dropped, uint16_t vbucket)
 {
     return ENGINE_ENOTSUP;
@@ -413,12 +449,28 @@ Demo_map_elem_alloc(ENGINE_HANDLE* handle, const void* cookie,
     return ENGINE_ENOTSUP;
 }
 
+#ifdef USE_BLOCK_ALLOCATOR
+static void
+Demo_map_elem_release(ENGINE_HANDLE* handle, const void *cookie,
+                         eitem *eitem)
+{
+    return;
+}
+
+static void
+Demo_map_elem_block_release(ENGINE_HANDLE* handle, const void *cookie,
+                               eitem *eitem_list, const int eitem_count)
+{
+    return;
+}
+#else
 static void
 Demo_map_elem_release(ENGINE_HANDLE* handle, const void *cookie,
                          eitem **eitem_array, const int eitem_count)
 {
     return;
 }
+#endif
 
 static ENGINE_ERROR_CODE
 Demo_map_elem_insert(ENGINE_HANDLE* handle, const void* cookie,
@@ -477,12 +529,35 @@ Demo_btree_elem_alloc(ENGINE_HANDLE* handle, const void* cookie,
     return ENGINE_ENOTSUP;
 }
 
+#ifdef USE_BLOCK_ALLOCATOR
+static void
+Demo_btree_elem_release(ENGINE_HANDLE* handle, const void *cookie,
+                           eitem *elem)
+{
+    return;
+}
+
+static void
+Demo_btree_elem_block_release(ENGINE_HANDLE* handle, const void *cookie,
+                                 eitem *elem_list, const int eitem_count)
+{
+    return;
+}
+
+static void
+Demo_btree_elem_array_release(ENGINE_HANDLE* handle, const void *cookie,
+                                 eitem **eitem_array, const int eitem_count)
+{
+    return;
+}
+#else
 static void
 Demo_btree_elem_release(ENGINE_HANDLE* handle, const void *cookie,
                            eitem **eitem_array, const int eitem_count)
 {
     return;
 }
+#endif
 
 static ENGINE_ERROR_CODE
 Demo_btree_elem_insert(ENGINE_HANDLE* handle, const void* cookie,
@@ -533,7 +608,11 @@ Demo_btree_elem_get(ENGINE_HANDLE* handle, const void* cookie,
                        const bkey_range *bkrange, const eflag_filter *efilter,
                        const uint32_t offset, const uint32_t req_count,
                        const bool delete, const bool drop_if_empty,
+#ifdef USE_BLOCK_ALLOCATOR
+                       eitem** eitem_list, uint32_t* eitem_count, uint32_t srt_count,
+#else
                        eitem** eitem_array, uint32_t* eitem_count,
+#endif
                        uint32_t *access_count, uint32_t* flags,
                        bool* dropped_trimmed, uint16_t vbucket)
 {
@@ -565,7 +644,11 @@ Demo_btree_posi_find_with_get(ENGINE_HANDLE* handle, const void* cookie,
                                  const char *key, const size_t nkey,
                                  const bkey_range *bkrange,
                                  ENGINE_BTREE_ORDER order, const uint32_t count,
+#ifdef USE_BLOCK_ALLOCATOR
+                                 int *position, eitem **eitem_list,
+#else
                                  int *position, eitem **eitem_array,
+#endif
                                  uint32_t *eitem_count, uint32_t *eitem_index,
                                  uint32_t *flags, uint16_t vbucket)
 {
@@ -577,7 +660,11 @@ Demo_btree_elem_get_by_posi(ENGINE_HANDLE* handle, const void* cookie,
                                const char *key, const size_t nkey,
                                ENGINE_BTREE_ORDER order,
                                int from_posi, int to_posi,
+#ifdef USE_BLOCK_ALLOCATOR
+                               eitem **eitem_list, uint32_t *eitem_count,
+#else
                                eitem **eitem_array, uint32_t *eitem_count,
+#endif
                                uint32_t *flags, uint16_t vbucket)
 {
     return ENGINE_ENOTSUP;
@@ -774,6 +861,9 @@ create_instance(uint64_t interface, GET_SERVER_API get_server_api,
          .list_struct_create = Demo_list_struct_create,
          .list_elem_alloc   = Demo_list_elem_alloc,
          .list_elem_release = Demo_list_elem_release,
+#ifdef USE_BLOCK_ALLOCATOR
+         .list_elem_block_release = Demo_list_elem_block_release,
+#endif
          .list_elem_insert  = Demo_list_elem_insert,
          .list_elem_delete  = Demo_list_elem_delete,
          .list_elem_get     = Demo_list_elem_get,
@@ -781,6 +871,9 @@ create_instance(uint64_t interface, GET_SERVER_API get_server_api,
          .set_struct_create = Demo_set_struct_create,
          .set_elem_alloc    = Demo_set_elem_alloc,
          .set_elem_release  = Demo_set_elem_release,
+#ifdef USE_BLOCK_ALLOCATOR
+         .set_elem_block_release = Demo_set_elem_block_release,
+#endif
          .set_elem_insert   = Demo_set_elem_insert,
          .set_elem_delete   = Demo_set_elem_delete,
          .set_elem_exist    = Demo_set_elem_exist,
@@ -790,6 +883,9 @@ create_instance(uint64_t interface, GET_SERVER_API get_server_api,
          .map_struct_create = Demo_map_struct_create,
          .map_elem_alloc    = Demo_map_elem_alloc,
          .map_elem_release  = Demo_map_elem_release,
+#ifdef USE_BLOCK_ALLOCATOR
+         .map_elem_block_release = Demo_map_elem_block_release,
+#endif
          .map_elem_insert   = Demo_map_elem_insert,
          .map_elem_update   = Demo_map_elem_update,
          .map_elem_delete   = Demo_map_elem_delete,
@@ -799,6 +895,10 @@ create_instance(uint64_t interface, GET_SERVER_API get_server_api,
          .btree_struct_create = Demo_btree_struct_create,
          .btree_elem_alloc   = Demo_btree_elem_alloc,
          .btree_elem_release = Demo_btree_elem_release,
+#ifdef USE_BLOCK_ALLOCATOR
+         .btree_elem_block_release = Demo_btree_elem_block_release,
+         .btree_elem_array_release = Demo_btree_elem_array_release,
+#endif
          .btree_elem_insert  = Demo_btree_elem_insert,
          .btree_elem_update  = Demo_btree_elem_update,
          .btree_elem_delete  = Demo_btree_elem_delete,

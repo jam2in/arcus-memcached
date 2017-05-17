@@ -32,6 +32,9 @@
 #include "memcached/extension.h"
 #include "memcached/vbucket.h"
 #include "memcached/engine_common.h"
+#ifdef USE_BLOCK_ALLOCATOR
+#include "memcached/block_allocator.h"
+#endif
 
 #ifdef __cplusplus
 extern "C" {
@@ -350,8 +353,16 @@ extern "C" {
                                              const void* key, const int nkey,
                                              const size_t nbytes, eitem** eitem);
 
+#ifdef USE_BLOCK_ALLOCATOR
+        void (*list_elem_release)(ENGINE_HANDLE* handle, const void *cookie,
+                                  eitem *eitem);
+
+        void (*list_elem_block_release)(ENGINE_HANDLE* handle, const void *cookie,
+                                        eitem *eitem_list, const int eitem_count);
+#else
         void (*list_elem_release)(ENGINE_HANDLE* handle, const void *cookie,
                                   eitem **eitem_array, const int eitem_count);
+#endif
 
         ENGINE_ERROR_CODE (*list_elem_insert)(ENGINE_HANDLE* handle, const void* cookie,
                                               const void* key, const int nkey,
@@ -385,8 +396,16 @@ extern "C" {
                                             const void* key, const int nkey,
                                             const size_t nbytes, eitem** eitem);
 
+#ifdef USE_BLOCK_ALLOCATOR
+        void (*set_elem_release)(ENGINE_HANDLE* handle, const void *cookie,
+                                 eitem *eitem);
+
+        void (*set_elem_block_release)(ENGINE_HANDLE* handle, const void *cookie,
+                                       block_result_t *blkret);
+#else
         void (*set_elem_release)(ENGINE_HANDLE* handle, const void *cookie,
                                  eitem **eitem_array, const int eitem_count);
+#endif
 
         ENGINE_ERROR_CODE (*set_elem_insert)(ENGINE_HANDLE* handle, const void* cookie,
                                              const void* key, const int nkey, eitem *eitem,
@@ -408,7 +427,11 @@ extern "C" {
                                           const void* key, const int nkey,
                                           const uint32_t count,
                                           const bool delete, const bool drop_if_empty,
+#ifdef USE_BLOCK_ALLOCATOR
+                                          block_result_t *blkret,
+#else
                                           eitem** eitem, uint32_t* eitem_count,
+#endif
                                           uint32_t* flags, bool* dropped,
                                           uint16_t vbucket);
 
@@ -429,10 +452,20 @@ extern "C" {
                                             const size_t nfield,
                                             const size_t nbytes,
                                             eitem** eitem);
+#ifdef USE_BLOCK_ALLOCATOR
+        void (*map_elem_release)(ENGINE_HANDLE* handle,
+                                 const void *cookie,
+                                 eitem *eitem);
+        void (*map_elem_block_release)(ENGINE_HANDLE* handle,
+                                       const void *cookie,
+                                       eitem *eitem_list,
+                                       const int eitem_count);
+#else
         void (*map_elem_release)(ENGINE_HANDLE* handle,
                                  const void *cookie,
                                  eitem **eitem_array,
                                  const int eitem_count);
+#endif
         ENGINE_ERROR_CODE (*map_elem_insert)(ENGINE_HANDLE* handle,
                                              const void* cookie,
                                              const void* key,
@@ -486,8 +519,19 @@ extern "C" {
                                               const size_t nbkey, const size_t neflag,
                                               const size_t nbytes, eitem** eitem);
 
+#ifdef USE_BLOCK_ALLOCATOR
+        void (*btree_elem_release)(ENGINE_HANDLE* handle, const void *cookie,
+                                   eitem *eitem);
+
+        void (*btree_elem_block_release)(ENGINE_HANDLE* handle, const void *cookie,
+                                         eitem *eitem_list, const int eitem_count);
+
+        void (*btree_elem_array_release)(ENGINE_HANDLE* handle, const void *cookie,
+                                         eitem **eitem_array, const int eitem_count);
+#else
         void (*btree_elem_release)(ENGINE_HANDLE* handle, const void *cookie,
                                    eitem **eitem_array, const int eitem_count);
+#endif
 
         ENGINE_ERROR_CODE (*btree_elem_insert)(ENGINE_HANDLE* handle, const void* cookie,
                                               const void* key, const int nkey,
@@ -528,7 +572,11 @@ extern "C" {
                                             const uint32_t offset,
                                             const uint32_t req_count,
                                             const bool delete, const bool drop_if_empty,
+#ifdef USE_BLOCK_ALLOCATOR
+                                            eitem** eitem_list, uint32_t* eitem_count, uint32_t srt_count,
+#else
                                             eitem** eitem_array, uint32_t* eitem_count,
+#endif
                                             uint32_t* access_count, uint32_t* flags,
                                             bool* dropped_trimmed, uint16_t vbucket);
 
@@ -550,7 +598,11 @@ extern "C" {
                                              const bkey_range *bkrange,
                                              ENGINE_BTREE_ORDER order,
                                              const uint32_t count,
+#ifdef USE_BLOCK_ALLOCATOR
+                                             int *position, eitem **eitem_list,
+#else
                                              int *position, eitem **eitem_array,
+#endif
                                              uint32_t *eitem_count, uint32_t *eitem_index,
                                              uint32_t *flags, uint16_t vbucket);
 
@@ -558,7 +610,11 @@ extern "C" {
                                              const char *key, const size_t nkey,
                                              ENGINE_BTREE_ORDER order,
                                              int from_posi, int to_posi,
+#ifdef USE_BLOCK_ALLOCATOR
+                                             eitem **eitem_list, uint32_t *eitem_count,
+#else
                                              eitem **eitem_array, uint32_t *eitem_count,
+#endif
                                              uint32_t *flags, uint16_t vbucket);
 
 #ifdef SUPPORT_BOP_SMGET
@@ -569,7 +625,11 @@ extern "C" {
                                               const bkey_range *bkrange,
                                               const eflag_filter *efilter,
                                               const uint32_t offset, const uint32_t count,
+#ifdef USE_BLOCK_ALLOCATOR
+                                              eitem** elem_list,
+#else
                                               eitem** eitem_array,
+#endif
                                               uint32_t* kfnd_array,
                                               uint32_t* flag_array,
                                               uint32_t* eitem_count,
@@ -678,6 +738,21 @@ extern "C" {
                                   const char *opstr, const char *modestr,
                                   const char *prefix, const int nprefix,
                                   const char *filepath);
+#endif
+
+#ifdef USE_BLOCK_ALLOCATOR
+        /*
+         * Used to read elements in blocks
+         *
+         * @paran handle the engine handle
+         * @param cookie the cookie provided by the frontend
+         * @param blkret is structure containing the overall contents of the block to be read
+         *
+         * @return element corresponding to elem_num
+         */
+        eitem *(*get_block_elem)(ENGINE_HANDLE* handle,
+                                const void* cookie,
+                                block_result_t *blkret);
 #endif
 
         /**
